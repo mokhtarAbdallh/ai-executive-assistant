@@ -1,13 +1,34 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
+import cookie from "@fastify/cookie";
 import { API_PREFIX } from "@dawwen/shared";
+import type {
+  PrismaClient} from "@dawwen/db";
+import {
+  getPrismaClient,
+  SettingsRepository,
+  ConsentRepository,
+  ProposalRepository,
+} from "@dawwen/db";
 import { loggerOptions } from "./logger.js";
 import { healthRoutes } from "./routes/health.js";
+import { authRoutes } from "./routes/auth.js";
+import { settingsRoutes } from "./routes/settings.js";
+import { consentRoutes } from "./routes/consents.js";
+import { proposalRoutes } from "./routes/proposals.js";
+import { LocalAuthProvider } from "./auth/local.provider.js";
+import { CognitoAuthProvider } from "./auth/cognito.provider.js";
+import { createAuthMiddleware } from "./auth/middleware.js";
+import type { IAuthProvider } from "./auth/types.js";
 
 export interface AppOptions {
   corsOrigins: string[];
   logLevel?: string;
+  appSecret?: string;
+  authProvider?: IAuthProvider;
+  localAuthProvider?: LocalAuthProvider;
+  prisma?: PrismaClient;
 }
 
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
@@ -17,16 +38,52 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     bodyLimit: 1024 * 1024, // audio never goes through the API (direct S3 upload)
   });
 
+  const prisma = opts.prisma ?? getPrismaClient();
+  const appSecret = opts.appSecret ?? process.env.APP_SECRET ?? "dawwen-default-dev-secret-32-chars-long";
+
+  let authProvider: IAuthProvider;
+  let localAuthProvider: LocalAuthProvider;
+
+  if (opts.authProvider) {
+    authProvider = opts.authProvider;
+    localAuthProvider =
+      opts.localAuthProvider ?? new LocalAuthProvider(prisma, appSecret);
+  } else if (process.env.AUTH_PROVIDER === "cognito") {
+    authProvider = new CognitoAuthProvider({
+      region: process.env.AWS_REGION ?? "eu-central-1",
+      userPoolId: process.env.COGNITO_USER_POOL_ID ?? "mock-pool",
+      clientId: process.env.COGNITO_CLIENT_ID,
+    });
+    localAuthProvider = new LocalAuthProvider(prisma, appSecret);
+  } else {
+    localAuthProvider =
+      opts.localAuthProvider ?? new LocalAuthProvider(prisma, appSecret);
+    authProvider = localAuthProvider;
+  }
+
   await app.register(helmet);
   await app.register(cors, {
     origin: opts.corsOrigins,
     credentials: true,
   });
+  await app.register(cookie);
+
+  // Decorate fastify with authenticate hook
+  app.decorate("authenticate", createAuthMiddleware(authProvider));
+
+  // Instantiate repositories
+  const settingsRepository = new SettingsRepository(prisma);
+  const consentRepository = new ConsentRepository(prisma);
+  const proposalRepository = new ProposalRepository(prisma);
 
   // Invariant 6: every route lives under /api (the ALB only forwards /api/* to this service).
   await app.register(
     async (api) => {
       await api.register(healthRoutes);
+      await api.register(authRoutes, { localAuthProvider });
+      await api.register(settingsRoutes, { settingsRepository });
+      await api.register(consentRoutes, { consentRepository });
+      await api.register(proposalRoutes, { proposalRepository });
     },
     { prefix: API_PREFIX },
   );

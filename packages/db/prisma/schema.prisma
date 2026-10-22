@@ -1,0 +1,457 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  OWNER
+  MEMBER
+  GUEST
+}
+
+enum MeetingStatus {
+  UPLOADED
+  QUEUED
+  TRANSCRIBING
+  ANALYZING
+  REVIEW_PENDING
+  APPROVED
+  FAILED
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TaskStatus {
+  NEW
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum ProposalStatus {
+  PENDING_APPROVAL
+  APPROVED
+  EXECUTED
+  REJECTED
+  FAILED
+}
+
+enum ProposalActionType {
+  SCHEDULE_MEETING
+  DRAFT_EMAIL
+  SEND_REMINDER
+  CREATE_TASK
+}
+
+enum ReminderStatus {
+  SCHEDULED
+  SENT
+  CANCELLED
+}
+
+enum CreditTransactionType {
+  CREDIT_TOPUP
+  CREDIT_RESERVE
+  CREDIT_SETTLE
+  CREDIT_REFUND
+}
+
+model User {
+  id                  String               @id @default(cuid())
+  email               String               @unique
+  passwordHash        String?
+  name                String
+  role                Role                 @default(OWNER)
+  avatarUrl           String?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  settings            UserSettings?
+  consents            RecordingConsent[]
+  meetings            Meeting[]
+  proposals           Proposal[]
+  creditLedger        CreditLedger?
+  creditTransactions  CreditTransaction[]
+  reminders           Reminder[]
+  calendarConnections CalendarConnection[]
+  usageEvents         UsageEvent[]
+  editHistories       EditHistory[]
+
+  @@map("users")
+}
+
+model UserSettings {
+  id                 String   @id @default(cuid())
+  userId             String   @unique
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  language           String   @default("ar")
+  timezone           String   @default("Africa/Cairo")
+  audioRetentionDays Int      @default(7)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@map("user_settings")
+}
+
+model RecordingConsent {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  meetingId        String?
+  meeting          Meeting? @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  participantEmail String?
+  participantName  String
+  consentedAt      DateTime @default(now())
+  consentMethod    String   @default("ui_checkbox")
+  ipAddress        String?
+  userAgent        String?
+
+  @@index([userId])
+  @@index([meetingId])
+  @@map("recording_consents")
+}
+
+model Meeting {
+  id                   String              @id @default(cuid())
+  userId               String
+  user                 User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title                String
+  scheduledStart       DateTime?
+  scheduledEnd         DateTime?
+  actualStart          DateTime?
+  actualEnd            DateTime?
+  status               MeetingStatus       @default(UPLOADED)
+  language             String              @default("ar")
+  audioSource          String              @default("upload")
+  audioS3Key           String?
+  audioDurationSeconds Int?
+  audioDeletedAt       DateTime?
+  failureReason        String?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  participants         MeetingParticipant[]
+  transcriptSegments   TranscriptSegment[]
+  analysis             MeetingAnalysis?
+  agendaItems          AgendaItem[]
+  topics               TopicDiscussion[]
+  decisions            Decision[]
+  tasks                Task[]
+  openQuestions        OpenQuestion[]
+  documents            DocumentReference[]
+  proposals            Proposal[]
+  followUpDrafts       FollowUpDraft[]
+  reminders            Reminder[]
+  embeddings           MeetingEmbedding[]
+  usageEvents          UsageEvent[]
+  editHistories        EditHistory[]
+  consents             RecordingConsent[]
+
+  @@index([userId])
+  @@index([userId, status])
+  @@map("meetings")
+}
+
+model MeetingParticipant {
+  id           String   @id @default(cuid())
+  meetingId    String
+  meeting      Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  name         String
+  email        String?
+  role         String?
+  speakerLabel String?
+  isExternal   Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  @@index([meetingId])
+  @@map("meeting_participants")
+}
+
+model TranscriptSegment {
+  id           String   @id @default(cuid())
+  meetingId    String
+  meeting      Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  speakerLabel String?
+  startMs      Int
+  endMs        Int
+  text         String
+  language     String?
+  confidence   Float?
+  createdAt    DateTime @default(now())
+
+  @@index([meetingId])
+  @@map("transcript_segments")
+}
+
+model MeetingAnalysis {
+  id            String   @id @default(cuid())
+  meetingId     String   @unique
+  meeting       Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  version       Int      @default(1)
+  tldr          String
+  purpose       String
+  rawJson       Json
+  modelName     String?
+  promptVersion String?
+  status        String   @default("draft")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("meeting_analyses")
+}
+
+model AgendaItem {
+  id         String   @id @default(cuid())
+  meetingId  String
+  meeting    Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  title      String
+  orderIndex Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([meetingId])
+  @@map("agenda_items")
+}
+
+model TopicDiscussion {
+  id               String   @id @default(cuid())
+  meetingId        String
+  meeting          Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  title            String
+  summary          String
+  sourceTs         String?
+  sourceSegmentIds String[] @default([])
+  orderIndex       Int      @default(0)
+  createdAt        DateTime @default(now())
+
+  @@index([meetingId])
+  @@map("topic_discussions")
+}
+
+model Decision {
+  id               String   @id @default(cuid())
+  meetingId        String
+  meeting          Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  text             String
+  sourceTs         String?
+  sourceSegmentIds String[] @default([])
+  confidence       Float?
+  needsReview      Boolean  @default(false)
+  approved         Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([meetingId])
+  @@map("decisions")
+}
+
+model Task {
+  id               String     @id @default(cuid())
+  meetingId        String
+  meeting          Meeting    @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  title            String
+  description      String?
+  ownerName        String?
+  ownerEmail       String?
+  dueDate          DateTime?
+  priority         Priority   @default(MEDIUM)
+  status           TaskStatus @default(NEW)
+  sourceTs         String?
+  sourceSegmentIds String[]   @default([])
+  confidence       Float?
+  needsReview      Boolean    @default(false)
+  approved         Boolean    @default(false)
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  reminders        Reminder[]
+
+  @@index([meetingId])
+  @@map("tasks")
+}
+
+model OpenQuestion {
+  id               String   @id @default(cuid())
+  meetingId        String
+  meeting          Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  question         String
+  askedBy          String?
+  sourceTs         String?
+  sourceSegmentIds String[] @default([])
+  createdAt        DateTime @default(now())
+
+  @@index([meetingId])
+  @@map("open_questions")
+}
+
+model DocumentReference {
+  id           String   @id @default(cuid())
+  meetingId    String
+  meeting      Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  title        String
+  url          String
+  documentType String?
+  createdAt    DateTime @default(now())
+
+  @@index([meetingId])
+  @@map("document_references")
+}
+
+model Proposal {
+  id          String             @id @default(cuid())
+  userId      String
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  meetingId   String?
+  meeting     Meeting?           @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  actionType  ProposalActionType
+  payload     Json
+  status      ProposalStatus     @default(PENDING_APPROVAL)
+  reason      String?
+  executedAt  DateTime?
+  error       String?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@index([userId])
+  @@index([userId, status])
+  @@index([meetingId])
+  @@map("proposals")
+}
+
+model FollowUpDraft {
+  id             String    @id @default(cuid())
+  meetingId      String
+  meeting        Meeting   @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  recipientEmail String?
+  recipientName  String?
+  channel        String    @default("email")
+  subject        String?
+  body           String
+  status         String    @default("draft")
+  sentAt         DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([meetingId])
+  @@map("follow_up_drafts")
+}
+
+model Reminder {
+  id        String         @id @default(cuid())
+  userId    String
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  taskId    String?
+  task      Task?          @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  meetingId String?
+  meeting   Meeting?       @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  remindAt  DateTime
+  channel   String         @default("console")
+  status    ReminderStatus @default(SCHEDULED)
+  sentAt    DateTime?
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@index([userId])
+  @@index([taskId])
+  @@index([remindAt, status])
+  @@map("reminders")
+}
+
+model CalendarConnection {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider        String    @default("google")
+  encryptedTokens String
+  calendarId      String?
+  syncStatus      String    @default("idle")
+  lastSyncedAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("calendar_connections")
+}
+
+model CreditLedger {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  balanceMicros  BigInt   @default(0)
+  reservedMicros BigInt   @default(0)
+  updatedAt      DateTime @updatedAt
+
+  @@map("credit_ledgers")
+}
+
+model CreditTransaction {
+  id              String                @id @default(cuid())
+  userId          String
+  user            User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amountMicros    BigInt
+  transactionType CreditTransactionType
+  referenceType   String?
+  referenceId     String?
+  description     String
+  createdAt       DateTime              @default(now())
+
+  @@index([userId])
+  @@map("credit_transactions")
+}
+
+model UsageEvent {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  meetingId     String?
+  meeting       Meeting? @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  operationType String
+  quantity      Float
+  unit          String
+  costMicros    BigInt
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  @@index([userId])
+  @@index([meetingId])
+  @@map("usage_events")
+}
+
+model EditHistory {
+  id             String   @id @default(cuid())
+  meetingId      String
+  meeting        Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entityType     String
+  entityId       String
+  originalValue  Json
+  editedValue    Json
+  createdAt      DateTime @default(now())
+
+  @@index([meetingId])
+  @@index([userId])
+  @@map("edit_histories")
+}
+
+model MeetingEmbedding {
+  id        String                 @id @default(cuid())
+  meetingId String
+  meeting   Meeting                @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  segmentId String?
+  text      String
+  embedding Unsupported("vector")?
+  metadata  Json?
+  createdAt DateTime               @default(now())
+
+  @@index([meetingId])
+  @@map("meeting_embeddings")
+}

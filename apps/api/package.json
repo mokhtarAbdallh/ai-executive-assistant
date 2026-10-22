@@ -12,10 +12,14 @@
   },
   "dependencies": {
     "@dawwen/config": "workspace:*",
+    "@dawwen/db": "workspace:*",
     "@dawwen/shared": "workspace:*",
+    "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^10.0.2",
     "@fastify/helmet": "^13.0.1",
+    "@prisma/client": "^6.3.1",
     "fastify": "^5.2.1",
+    "jose": "^6.0.8",
     "zod": "^3.24.2"
   },
   "devDependencies": {

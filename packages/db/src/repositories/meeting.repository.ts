@@ -1,0 +1,77 @@
+import type { PrismaClient, Meeting, MeetingStatus, Prisma } from "@prisma/client";
+import type { TenantContext} from "./base.js";
+import { CrossTenantAccessViolationError } from "./base.js";
+
+export class MeetingRepository {
+  constructor(private readonly prisma: PrismaClient) {}
+
+  async create(
+    context: TenantContext,
+    data: Omit<Prisma.MeetingCreateInput, "user">,
+  ): Promise<Meeting> {
+    return this.prisma.meeting.create({
+      data: {
+        ...data,
+        user: { connect: { id: context.userId } },
+      },
+    });
+  }
+
+  async findById(context: TenantContext, meetingId: string): Promise<Meeting | null> {
+    const meeting = await this.prisma.meeting.findUnique({
+      where: { id: meetingId },
+    });
+
+    if (!meeting) {
+      return null;
+    }
+
+    if (meeting.userId !== context.userId) {
+      throw new CrossTenantAccessViolationError(meetingId, context.userId, "Meeting");
+    }
+
+    return meeting;
+  }
+
+  async list(
+    context: TenantContext,
+    filter?: { status?: MeetingStatus; limit?: number; offset?: number },
+  ): Promise<Meeting[]> {
+    return this.prisma.meeting.findMany({
+      where: {
+        userId: context.userId,
+        ...(filter?.status ? { status: filter.status } : {}),
+      },
+      orderBy: { createdAt: "desc" },
+      take: filter?.limit ?? 50,
+      skip: filter?.offset ?? 0,
+    });
+  }
+
+  async updateStatus(
+    context: TenantContext,
+    meetingId: string,
+    status: MeetingStatus,
+    failureReason?: string,
+  ): Promise<Meeting> {
+    // Assert tenant ownership first
+    await this.findById(context, meetingId);
+
+    return this.prisma.meeting.update({
+      where: { id: meetingId },
+      data: {
+        status,
+        failureReason: failureReason ?? null,
+      },
+    });
+  }
+
+  async delete(context: TenantContext, meetingId: string): Promise<Meeting> {
+    // Assert tenant ownership first
+    await this.findById(context, meetingId);
+
+    return this.prisma.meeting.delete({
+      where: { id: meetingId },
+    });
+  }
+}
