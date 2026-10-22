@@ -8,7 +8,7 @@ export default defineConfig({
     conditions: ["source"],
   },
   server: {
-    port: 5173,
+    port: 5174,
     host: true,
     proxy: {
       "/api": {
