@@ -10,6 +10,11 @@ import type {
   Reminder,
   SearchCitation,
   AgentResponse,
+  BillingBalance,
+  CreditTransactionItem,
+  UsageSummary,
+  UsageEventItem,
+  UserSettings,
 } from "./types";
 
 const TOKEN_KEY = "dawwen_access_token";
@@ -1265,3 +1270,223 @@ export async function cancelReminder(reminderId: string): Promise<{ reminder: Re
   }
   return { reminder: DEMO_REMINDERS_STORE[0]! };
 }
+
+// ==========================================
+// Phase 6: Billing, Settings & Data Deletion
+// ==========================================
+
+const DEMO_BILLING_BALANCE: BillingBalance = {
+  balanceMicros: "15500000",
+  reservedMicros: "0",
+  availableMicros: "15500000",
+  currency: "USD",
+  formattedBalance: "$15.50",
+};
+
+const DEMO_TRANSACTIONS: CreditTransactionItem[] = [
+  {
+    id: "tx-demo-1",
+    userId: "usr-demo",
+    amountMicros: "20000000",
+    amountDollars: 20,
+    transactionType: "CREDIT_TOPUP",
+    referenceType: "topup",
+    referenceId: "INSTAPAY-9842",
+    description: "شحن رصيد تجريبي عبر انستاباي / التحويل اليدوي",
+    createdAt: new Date(Date.now() - 86400000 * 2).toISOString(),
+  },
+  {
+    id: "tx-demo-2",
+    userId: "usr-demo",
+    amountMicros: "-4500000",
+    amountDollars: -4.5,
+    transactionType: "CREDIT_SETTLE",
+    referenceType: "meeting_usage",
+    referenceId: "demo-meet-01",
+    description: "استهلاك معالجة اجتماع مراجعة السبرنت الأسبوعي",
+    createdAt: new Date(Date.now() - 86400000).toISOString(),
+  },
+];
+
+const DEMO_USAGE_SUMMARY: UsageSummary = {
+  totalEvents: 4,
+  totalAudioMinutes: 45.5,
+  totalLlmTokens: 18400,
+  totalCostMicros: "4500000",
+  totalCostDollars: 4.5,
+};
+
+const DEMO_USAGE_EVENTS: UsageEventItem[] = [
+  {
+    id: "use-1",
+    userId: "usr-demo",
+    meetingId: "demo-meet-01",
+    operationType: "AUDIO_TRANSCRIPTION",
+    quantity: 15,
+    unit: "minutes",
+    costMicros: "3000000",
+    costDollars: 3.0,
+    createdAt: new Date(Date.now() - 86400000).toISOString(),
+    meeting: { id: "demo-meet-01", title: "مراجعة السبرنت الأسبوعي" },
+  },
+  {
+    id: "use-2",
+    userId: "usr-demo",
+    meetingId: "demo-meet-01",
+    operationType: "LLM_ANALYSIS",
+    quantity: 12500,
+    unit: "tokens",
+    costMicros: "1500000",
+    costDollars: 1.5,
+    createdAt: new Date(Date.now() - 86400000).toISOString(),
+    meeting: { id: "demo-meet-01", title: "مراجعة السبرنت الأسبوعي" },
+  },
+];
+
+let DEMO_SETTINGS: UserSettings = {
+  language: "ar",
+  timezone: "Africa/Cairo",
+  audioRetentionDays: 7,
+};
+
+export async function fetchBillingBalance(): Promise<BillingBalance> {
+  try {
+    const res = await authFetch("/api/billing/balance");
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback to demo
+  }
+  return DEMO_BILLING_BALANCE;
+}
+
+export async function fetchBillingTransactions(): Promise<{ transactions: CreditTransactionItem[] }> {
+  try {
+    const res = await authFetch("/api/billing/transactions");
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback to demo
+  }
+  return { transactions: DEMO_TRANSACTIONS };
+}
+
+export async function fetchBillingUsage(): Promise<{ summary: UsageSummary; events: UsageEventItem[] }> {
+  try {
+    const res = await authFetch("/api/billing/usage");
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback to demo
+  }
+  return { summary: DEMO_USAGE_SUMMARY, events: DEMO_USAGE_EVENTS };
+}
+
+export async function topupCredits(payload: {
+  amountDollars?: number;
+  reference?: string;
+  description?: string;
+}): Promise<{ success: boolean; transaction: CreditTransactionItem & { newBalanceMicros?: string; formattedNewBalance?: string } }> {
+  try {
+    const res = await authFetch("/api/billing/topup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback to demo
+  }
+
+  const dollars = payload.amountDollars ?? 10;
+  const micros = dollars * 1_000_000;
+  const currentMicros = parseInt(DEMO_BILLING_BALANCE.balanceMicros, 10);
+  const newMicros = currentMicros + micros;
+  DEMO_BILLING_BALANCE.balanceMicros = newMicros.toString();
+  DEMO_BILLING_BALANCE.availableMicros = newMicros.toString();
+  DEMO_BILLING_BALANCE.formattedBalance = `$${(newMicros / 1_000_000).toFixed(2)}`;
+
+  const tx: CreditTransactionItem = {
+    id: `tx-demo-${Date.now()}`,
+    userId: "usr-demo",
+    amountMicros: micros.toString(),
+    amountDollars: dollars,
+    transactionType: "CREDIT_TOPUP",
+    referenceType: "topup",
+    referenceId: payload.reference || "DEMO-TOPUP",
+    description: payload.description || `شحن رصيد تجريبي بقيمة $${dollars}`,
+    createdAt: new Date().toISOString(),
+  };
+  DEMO_TRANSACTIONS.unshift(tx);
+
+  return {
+    success: true,
+    transaction: {
+      ...tx,
+      newBalanceMicros: newMicros.toString(),
+      formattedNewBalance: DEMO_BILLING_BALANCE.formattedBalance,
+    },
+  };
+}
+
+export async function fetchSettings(): Promise<{ settings: UserSettings }> {
+  try {
+    const res = await authFetch("/api/settings");
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback to demo
+  }
+  return { settings: DEMO_SETTINGS };
+}
+
+export async function updateSettings(payload: {
+  language?: string;
+  timezone?: string;
+  audioRetentionDays?: number;
+}): Promise<{ settings: UserSettings }> {
+  try {
+    const res = await authFetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback to demo
+  }
+  DEMO_SETTINGS = { ...DEMO_SETTINGS, ...payload };
+  return { settings: DEMO_SETTINGS };
+}
+
+export async function exportAccountData(): Promise<Record<string, unknown>> {
+  try {
+    const res = await authFetch("/api/settings/export");
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback to demo
+  }
+  return {
+    metadata: {
+      exportDate: new Date().toISOString(),
+      version: "1.0",
+      format: "dawwen-account-export",
+    },
+    user: { id: "usr-demo", email: "demo@dawwen.ai", name: "مستخدم تجريبي" },
+    settings: DEMO_SETTINGS,
+    balance: DEMO_BILLING_BALANCE,
+    transactions: DEMO_TRANSACTIONS,
+    usage: DEMO_USAGE_EVENTS,
+    meetings: DEMO_MEETINGS_STORE,
+  };
+}
+
+export async function deleteAccount(): Promise<{ success: boolean }> {
+  try {
+    const res = await authFetch("/api/settings/account", {
+      method: "DELETE",
+    });
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback to demo
+  }
+  return { success: true };
+}
+
+

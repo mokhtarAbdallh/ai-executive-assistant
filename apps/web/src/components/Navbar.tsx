@@ -8,14 +8,16 @@ import {
   AlertCircle,
   Search,
   Bot,
+  CreditCard,
+  Settings,
 } from "lucide-react";
 
 interface NavbarProps {
   healthStatus: "connecting" | "connected" | "offline";
   uptime: number | null;
-  currentView: "list" | "detail" | "calendar" | "proposals" | "chat";
+  currentView: "list" | "detail" | "calendar" | "proposals" | "chat" | "billing" | "settings";
   pendingProposalsCount?: number;
-  onNavigate: (view: "list" | "calendar" | "proposals" | "chat") => void;
+  onNavigate: (view: "list" | "calendar" | "proposals" | "chat" | "billing" | "settings") => void;
   onNewMeetingClick: () => void;
   onHomeClick: () => void;
   onSearchClick?: () => void;
@@ -93,6 +95,28 @@ export function Navbar({
             >
               <Bot className="w-3.5 h-3.5 text-cyan-400" />
               <span>{currentLang === "ar" ? "اسأل AI" : "Ask AI"}</span>
+            </button>
+            <button
+              onClick={() => onNavigate("billing")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                currentView === "billing"
+                  ? "bg-slate-800 text-cyan-400 shadow-sm"
+                  : "text-slate-400 hover:text-white hover:bg-slate-900"
+              }`}
+            >
+              <CreditCard className="w-3.5 h-3.5 text-cyan-400" />
+              <span>{currentLang === "ar" ? "الرصيد" : "Billing"}</span>
+            </button>
+            <button
+              onClick={() => onNavigate("settings")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                currentView === "settings"
+                  ? "bg-slate-800 text-cyan-400 shadow-sm"
+                  : "text-slate-400 hover:text-white hover:bg-slate-900"
+              }`}
+            >
+              <Settings className="w-3.5 h-3.5 text-cyan-400" />
+              <span>{currentLang === "ar" ? "الإعدادات" : "Settings"}</span>
             </button>
           </nav>
 

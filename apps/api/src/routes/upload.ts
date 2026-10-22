@@ -5,6 +5,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import {
   type MeetingRepository,
   type ConsentRepository,
+  type CreditRepository,
   MeetingStatus,
   type PrismaClient,
 } from "@dawwen/db";
@@ -38,6 +39,7 @@ const UploadUrlBodySchema = z.object({
 export interface UploadRoutesOptions {
   meetingRepository: MeetingRepository;
   consentRepository: ConsentRepository;
+  creditRepository?: CreditRepository;
   prisma: PrismaClient;
   s3Client?: S3Client;
   bucketName?: string;
@@ -123,7 +125,21 @@ export async function uploadRoutes(
         }
       }
 
-      // 3. Construct sanitized S3 Key (ADR-002: uploads/{userId}/{meetingId}/{filename})
+      // 3. Balance Gate before processing (Phase 6)
+      if (options.creditRepository) {
+        const balance = await options.creditRepository.getBalance({ userId: user.id });
+        if (balance.availableMicros <= 0n) {
+          return reply.status(402).send({
+            error: "Insufficient credit balance",
+            message:
+              "You need a positive credit balance to upload and process meetings. Please top up your credits.",
+            balanceMicros: balance.balanceMicros.toString(),
+            availableMicros: balance.availableMicros.toString(),
+          });
+        }
+      }
+
+      // 4. Construct sanitized S3 Key (ADR-002: uploads/{userId}/{meetingId}/{filename})
       const sanitizedName = fileName
         .replace(/[^a-zA-Z0-9._-]/g, "_")
         .replace(/_{2,}/g, "_");

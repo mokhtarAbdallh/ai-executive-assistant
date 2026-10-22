@@ -237,3 +237,56 @@ export interface ChatMessage {
   drafts?: FollowUpDraft[];
   honestUnknown?: boolean;
 }
+
+export interface BillingBalance {
+  balanceMicros: string;
+  reservedMicros: string;
+  availableMicros: string;
+  currency: string;
+  formattedBalance: string;
+}
+
+export interface CreditTransactionItem {
+  id: string;
+  userId: string;
+  amountMicros: string;
+  amountDollars: number;
+  transactionType: "CREDIT_TOPUP" | "CREDIT_RESERVE" | "CREDIT_SETTLE" | "CREDIT_REFUND";
+  referenceType: string | null;
+  referenceId: string | null;
+  description: string;
+  createdAt: string;
+}
+
+export interface UsageSummary {
+  totalEvents: number;
+  totalAudioMinutes: number;
+  totalLlmTokens: number;
+  totalCostMicros: string;
+  totalCostDollars: number;
+}
+
+export interface UsageEventItem {
+  id: string;
+  userId: string;
+  meetingId: string | null;
+  operationType: string;
+  quantity: number;
+  unit: string;
+  costMicros: string;
+  costDollars: number;
+  metadata?: Record<string, unknown> | null;
+  createdAt: string;
+  meeting?: { id: string; title: string };
+}
+
+export interface UserSettings {
+  id?: string;
+  userId?: string;
+  language: string;
+  timezone: string;
+  audioRetentionDays: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+

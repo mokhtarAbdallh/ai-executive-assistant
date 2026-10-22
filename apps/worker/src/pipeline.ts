@@ -107,6 +107,28 @@ export async function processMeetingAudio(
     );
   }
 
+  // 2.5 Balance Gate before processing (Phase 6)
+  if (prisma.creditLedger) {
+    const ledger = await prisma.creditLedger.findUnique({
+      where: { userId },
+    });
+    if (ledger) {
+      const availableMicros = ledger.balanceMicros - ledger.reservedMicros;
+      if (availableMicros <= 0n) {
+        await prisma.meeting.update({
+          where: { id: meetingId },
+          data: {
+            status: MeetingStatus.FAILED,
+            failureReason: "Balance gate: insufficient credit balance. Please top up your account.",
+          },
+        });
+        throw new Error(
+          `Balance gate: User ${userId} has insufficient credit balance (${availableMicros} micros) to process meeting ${meetingId}.`,
+        );
+      }
+    }
+  }
+
   // Update status to TRANSCRIBING
   await prisma.meeting.update({
     where: { id: meetingId },
@@ -466,6 +488,36 @@ export async function processMeetingAudio(
       log.warn("failed to delete raw audio from S3", {
         error: (delErr as Error).message,
         s3Key,
+      });
+    }
+  }
+
+  // 11.5 Settle usage from Credit Ledger (Hard Invariant 7 + Phase 6)
+  const totalMeetingCostMicros = BigInt(customerPriceMicros + totalLlmCostMicros);
+  if (prisma.creditLedger && totalMeetingCostMicros > 0n) {
+    try {
+      await prisma.creditLedger.updateMany({
+        where: { userId },
+        data: {
+          balanceMicros: { decrement: totalMeetingCostMicros },
+        },
+      });
+      if (prisma.creditTransaction) {
+        await prisma.creditTransaction.create({
+          data: {
+            userId,
+            amountMicros: -totalMeetingCostMicros,
+            transactionType: "CREDIT_SETTLE",
+            description: `Usage cost for meeting: ${meeting.title}`,
+            referenceType: "meeting_usage",
+            referenceId: meetingId,
+          },
+        });
+      }
+    } catch (settleErr) {
+      log.warn("failed to settle credit ledger for meeting usage", {
+        error: (settleErr as Error).message,
+        meetingId,
       });
     }
   }

@@ -4,6 +4,7 @@ import type { PrismaClient, MeetingRepository, TaskRepository, DecisionRepositor
 import { MeetingStatus, Priority } from "@dawwen/db";
 import { FakeSpeechToText } from "@dawwen/asr";
 import { FakeLlmClient } from "@dawwen/llm";
+import type { DataManagementService } from "../services/data-management.js";
 
 const CreateMeetingSchema = z.object({
   title: z.string().trim().min(1).max(255),
@@ -36,6 +37,7 @@ export interface MeetingsRoutesOptions {
   taskRepository: TaskRepository;
   decisionRepository: DecisionRepository;
   prisma: PrismaClient;
+  dataManagementService?: DataManagementService;
 }
 
 export async function meetingsRoutes(
@@ -151,7 +153,7 @@ export async function meetingsRoutes(
     },
   );
 
-  // 5. Delete meeting
+  // 5. Delete meeting (Real data deletion: DB rows, embeddings, and S3 audio)
   fastify.delete(
     "/meetings/:id",
     { preHandler: [fastify.authenticate] },
@@ -159,8 +161,20 @@ export async function meetingsRoutes(
       const { id } = request.params as { id: string };
       const user = request.user!;
 
-      await meetingRepository.delete({ userId: user.id }, id);
-      return reply.send({ success: true, deletedId: id });
+      if (!id) {
+        return reply.status(400).send({ error: "Missing meeting id" });
+      }
+
+      if (options.dataManagementService) {
+        const result = await options.dataManagementService.deleteMeeting(
+          { userId: user.id },
+          id,
+        );
+        return reply.send(result);
+      } else {
+        await meetingRepository.delete({ userId: user.id }, id);
+        return reply.send({ success: true, deletedMeetingId: id, audioDeletedFromS3: false });
+      }
     },
   );
 
@@ -470,3 +484,6 @@ export async function meetingsRoutes(
     },
   );
 }
+
+
+

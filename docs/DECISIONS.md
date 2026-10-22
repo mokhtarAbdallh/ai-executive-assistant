@@ -87,3 +87,15 @@ One short entry per decision. Newer entries may supersede older ones (marked exp
 - **Hybrid Search Scoring:** Combines exact term matching, decision/topic title boosts, and keyword match ratio calculation (`matchedKeywords / totalKeywords`) to prevent high score anomalies from single generic common words.
 - **Notifications & Follow-ups:** `NotificationProvider` interface backed by `ConsoleNotificationProvider` for local/demo operation without requiring immediate SES IAM mutation.
 
+## ADR-014: Phase 6 Billing, Credits Ledger, PaymentProvider, and Real Data Deletion / Export
+- **Pay-as-you-go Ledger & Settlement:** Every user has a tenant-isolated `creditLedger`. Each top-up creates a `CREDIT_TOPUP` transaction; actual meeting processing settles consumption via `CREDIT_SETTLE` referencing the meeting and usage events.
+- **Balance Gating Before Processing:**
+  - `POST /api/meetings/:id/upload-url` checks the user's available balance (`availableMicros <= 0n` blocks upload with HTTP 402 `Payment Required`).
+  - Worker audio pipeline checks available credit balance prior to transcription; if balance is non-positive, fails the meeting with `status: FAILED` and reason `"Balance gate: insufficient credit balance"`.
+- **PaymentProvider Abstraction:** Defined `PaymentProvider` interface and implemented `ManualPaymentAdapter` supporting manual/voucher/InstaPay top-ups and instant ledger updates without requiring immediate payment gateway contract changes.
+- **Real Data Deletion & GDPR Portability:**
+  - `DataManagementService.deleteMeeting`: Deletes meeting database row (cascading all decisions, tasks, transcripts, drafts, proposals), removes pgvector `meeting_embeddings`, and sends `DeleteObjectCommand` to S3 to permanently delete the raw audio.
+  - `DataManagementService.deleteAccount`: Deletes user record, user settings, proposals, credit transactions, usage events, all meetings, embeddings, and deletes all S3 audio objects across the user's meetings.
+  - `DataManagementService.exportAccountData`: Generates a complete portable JSON export bundle (`dawwen-account-export-*.json`) containing user profile, settings, balance, transaction ledger, usage events, and all meetings.
+
+

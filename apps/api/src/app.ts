@@ -16,6 +16,7 @@ import {
   CalendarConnectionRepository,
   FollowUpDraftRepository,
   ReminderRepository,
+  CreditRepository,
 } from "@dawwen/db";
 import { loggerOptions } from "./logger.js";
 import { healthRoutes } from "./routes/health.js";
@@ -29,6 +30,7 @@ import { meetingsRoutes } from "./routes/meetings.js";
 import { chatRoutes } from "./routes/chat.js";
 import { searchRoutes } from "./routes/search.js";
 import { followUpRoutes } from "./routes/follow-up.js";
+import { billingRoutes } from "./routes/billing.js";
 import { LocalAuthProvider } from "./auth/local.provider.js";
 import { CognitoAuthProvider } from "./auth/cognito.provider.js";
 import { createAuthMiddleware } from "./auth/middleware.js";
@@ -41,6 +43,8 @@ import {
 import { ProposalExecutor } from "./services/proposal-executor.js";
 import { SearchService } from "./services/search.js";
 import { AgentService } from "./services/agent.js";
+import { type PaymentProvider, ManualPaymentAdapter } from "./services/payment.js";
+import { DataManagementService } from "./services/data-management.js";
 
 export interface AppOptions {
   corsOrigins: string[];
@@ -50,6 +54,8 @@ export interface AppOptions {
   localAuthProvider?: LocalAuthProvider;
   prisma?: PrismaClient;
   calendarProvider?: CalendarProvider;
+  paymentProvider?: PaymentProvider;
+  dataManagementService?: DataManagementService;
 }
 
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
@@ -102,6 +108,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const calendarConnectionRepository = new CalendarConnectionRepository(prisma);
   const draftRepository = new FollowUpDraftRepository(prisma);
   const reminderRepository = new ReminderRepository(prisma);
+  const creditRepository = new CreditRepository(prisma);
 
   const secret = opts.appSecret || process.env.APP_SECRET || "default-app-secret-at-least-32-characters-long!";
   const keyProvider = new HkdfKeyProvider(secret);
@@ -128,12 +135,21 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     meetingRepository,
   );
 
+  const paymentProvider =
+    opts.paymentProvider ?? new ManualPaymentAdapter(creditRepository);
+  const dataManagementService =
+    opts.dataManagementService ??
+    new DataManagementService({
+      prisma,
+      meetingRepository,
+    });
+
   // Invariant 6: every route lives under /api (the ALB only forwards /api/* to this service).
   await app.register(
     async (api) => {
       await api.register(healthRoutes);
       await api.register(authRoutes, { localAuthProvider });
-      await api.register(settingsRoutes, { settingsRepository });
+      await api.register(settingsRoutes, { settingsRepository, dataManagementService });
       await api.register(consentRoutes, { consentRepository });
       await api.register(proposalRoutes, { proposalRepository, proposalExecutor });
       await api.register(calendarRoutes, {
@@ -142,12 +158,18 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         tokenEncryptor,
         prisma,
       });
-      await api.register(uploadRoutes, { meetingRepository, consentRepository, prisma });
+      await api.register(uploadRoutes, {
+        meetingRepository,
+        consentRepository,
+        creditRepository,
+        prisma,
+      });
       await api.register(meetingsRoutes, {
         meetingRepository,
         taskRepository,
         decisionRepository,
         prisma,
+        dataManagementService,
       });
       await api.register(chatRoutes, { agentService });
       await api.register(searchRoutes, { searchService });
@@ -155,6 +177,10 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         draftRepository,
         reminderRepository,
         proposalRepository,
+      });
+      await api.register(billingRoutes, {
+        creditRepository,
+        paymentProvider,
       });
     },
     { prefix: API_PREFIX },

@@ -19,6 +19,7 @@ import {
   FileText,
   Mail,
   Bot,
+  Trash2,
 } from "lucide-react";
 import type { MeetingDetail as MeetingDetailType, Task, Decision } from "../types";
 import {
@@ -26,6 +27,7 @@ import {
   updateTask,
   updateDecision,
   approveAllMeetingItems,
+  deleteMeeting,
 } from "../api";
 import { AskChat } from "./AskChat";
 import { FollowUpTab } from "./FollowUpTab";
@@ -69,6 +71,21 @@ export function MeetingDetail({
   // Inline editing decision
   const [editingDecisionId, setEditingDecisionId] = useState<string | null>(null);
   const [decisionText, setDecisionText] = useState("");
+
+  // Delete meeting confirmation
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const handleDeleteMeeting = async () => {
+    try {
+      setIsDeleting(true);
+      await deleteMeeting(meeting.id);
+      onBack();
+    } catch (err) {
+      console.error("Delete meeting failed:", err);
+      setIsDeleting(false);
+    }
+  };
 
   const handleSaveTitle = async () => {
     if (!editTitleValue.trim()) return;
@@ -276,8 +293,17 @@ export function MeetingDetail({
             )}
           </div>
 
-          {/* Primary Action: Approve All */}
+          {/* Actions: Delete & Approve All */}
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => setShowDeleteConfirm(true)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-red-400 hover:text-red-300 hover:bg-red-500/10 border border-red-500/20 transition cursor-pointer"
+              title={t("settings.deleteMeetingBtn")}
+            >
+              <Trash2 className="w-4 h-4" />
+              <span>{t("settings.deleteMeetingBtn")}</span>
+            </button>
+
             {meeting.status !== "APPROVED" ? (
               <button
                 onClick={handleApproveAll}
@@ -295,6 +321,40 @@ export function MeetingDetail({
           </div>
         </div>
       </div>
+
+      {/* Delete Meeting Confirmation Modal */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-slate-900 border border-red-500/30 rounded-2xl p-6 max-w-md w-full shadow-2xl text-center space-y-4">
+            <div className="w-12 h-12 rounded-xl bg-red-500/10 text-red-400 mx-auto flex items-center justify-center text-xl">
+              <Trash2 className="w-6 h-6" />
+            </div>
+            <h3 className="text-lg font-bold text-white">
+              {t("settings.deleteMeetingBtn")}
+            </h3>
+            <p className="text-xs text-slate-300">
+              {t("settings.confirmDeleteMeeting")}
+            </p>
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowDeleteConfirm(false)}
+                className="flex-1 py-2.5 rounded-xl border border-slate-700 text-slate-300 font-semibold text-xs hover:bg-slate-800 transition"
+              >
+                {t("details.cancel")}
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={handleDeleteMeeting}
+                className="flex-1 py-2.5 rounded-xl font-bold text-white bg-red-600 hover:bg-red-700 transition text-xs shadow-lg shadow-red-500/20 disabled:opacity-50"
+              >
+                {isDeleting ? "جاري الحذف..." : "تأكيد الحذف"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Tabs Bar */}
       <div className="flex items-center gap-1 border-b border-slate-800 pb-px overflow-x-auto text-xs font-semibold">

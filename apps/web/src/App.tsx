@@ -8,6 +8,8 @@ import { CalendarView } from "./components/CalendarView";
 import { ProposalsInbox } from "./components/ProposalsInbox";
 import { AskChat } from "./components/AskChat";
 import { SearchModal } from "./components/SearchModal";
+import { BillingView } from "./components/BillingView";
+import { SettingsView } from "./components/SettingsView";
 import {
   fetchHealth,
   fetchMeetings,
@@ -22,7 +24,9 @@ export function App() {
   const { i18n } = useTranslation();
 
   // Navigation State
-  const [currentView, setCurrentView] = useState<"list" | "detail" | "calendar" | "proposals" | "chat">("list");
+  const [currentView, setCurrentView] = useState<
+    "list" | "detail" | "calendar" | "proposals" | "chat" | "billing" | "settings"
+  >("list");
   const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
   const [pendingProposalsCount, setPendingProposalsCount] = useState<number>(2);
 
@@ -224,6 +228,10 @@ export function App() {
               }}
             />
           </div>
+        ) : currentView === "billing" ? (
+          <BillingView />
+        ) : currentView === "settings" ? (
+          <SettingsView />
         ) : (
           <MeetingsList
             meetings={meetings}
@@ -268,10 +276,10 @@ export function App() {
       <footer className="border-t border-slate-800/80 py-6 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div>
-            دوّن (Dawwen) — المساعد الذكي للاجتماعات • المرحلة الخامسة (Follow-up & Agent)
+            دوّن (Dawwen) — المساعد الذكي للاجتماعات • المرحلة السادسة (Billing & Settings)
           </div>
           <div className="text-[11px] text-slate-500">
-            RTL-First • Egyptian Arabic & English Code-Switching • Human-In-The-Loop
+            RTL-First • Egyptian Arabic & English Code-Switching • Human-In-The-Loop • Pay-As-You-Go
           </div>
         </div>
       </footer>
