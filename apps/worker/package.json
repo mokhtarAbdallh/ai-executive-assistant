@@ -11,7 +11,13 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.740.0",
+    "@aws-sdk/client-s3": "^3.740.0",
+    "@aws-sdk/client-sqs": "^3.740.0",
+    "@dawwen/asr": "workspace:*",
     "@dawwen/config": "workspace:*",
+    "@dawwen/db": "workspace:*",
+    "@dawwen/llm": "workspace:*",
     "@dawwen/shared": "workspace:*"
   },
   "devDependencies": {

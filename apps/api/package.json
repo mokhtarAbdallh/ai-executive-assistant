@@ -11,8 +11,12 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.740.0",
+    "@aws-sdk/s3-request-presigner": "^3.740.0",
+    "@dawwen/asr": "workspace:*",
     "@dawwen/config": "workspace:*",
     "@dawwen/db": "workspace:*",
+    "@dawwen/llm": "workspace:*",
     "@dawwen/shared": "workspace:*",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^10.0.2",

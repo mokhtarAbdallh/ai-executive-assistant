@@ -10,6 +10,7 @@ import {
   SettingsRepository,
   ConsentRepository,
   ProposalRepository,
+  MeetingRepository,
 } from "@dawwen/db";
 import { loggerOptions } from "./logger.js";
 import { healthRoutes } from "./routes/health.js";
@@ -17,6 +18,7 @@ import { authRoutes } from "./routes/auth.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { consentRoutes } from "./routes/consents.js";
 import { proposalRoutes } from "./routes/proposals.js";
+import { uploadRoutes } from "./routes/upload.js";
 import { LocalAuthProvider } from "./auth/local.provider.js";
 import { CognitoAuthProvider } from "./auth/cognito.provider.js";
 import { createAuthMiddleware } from "./auth/middleware.js";
@@ -75,6 +77,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const settingsRepository = new SettingsRepository(prisma);
   const consentRepository = new ConsentRepository(prisma);
   const proposalRepository = new ProposalRepository(prisma);
+  const meetingRepository = new MeetingRepository(prisma);
 
   // Invariant 6: every route lives under /api (the ALB only forwards /api/* to this service).
   await app.register(
@@ -84,6 +87,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       await api.register(settingsRoutes, { settingsRepository });
       await api.register(consentRoutes, { consentRepository });
       await api.register(proposalRoutes, { proposalRepository });
+      await api.register(uploadRoutes, { meetingRepository, consentRepository, prisma });
     },
     { prefix: API_PREFIX },
   );
