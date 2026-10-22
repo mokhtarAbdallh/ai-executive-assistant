@@ -6,6 +6,10 @@ import type {
   CalendarEventItem,
   CalendarConnectionStatus,
   Proposal,
+  FollowUpDraft,
+  Reminder,
+  SearchCitation,
+  AgentResponse,
 } from "./types";
 
 const TOKEN_KEY = "dawwen_access_token";
@@ -829,4 +833,435 @@ export async function rejectProposal(proposalId: string, reason?: string): Promi
     return found;
   }
   return DEMO_PROPOSALS_STORE[0]!;
+}
+
+// ==========================================
+// PHASE 5: FOLLOW-UP, SEARCH & ASK AGENT API
+// ==========================================
+
+const DEMO_DRAFTS_STORE: FollowUpDraft[] = [
+  {
+    id: "draft-demo-1",
+    meetingId: "demo-meet-01",
+    recipientName: "عمر خالد (مدير المنتج)",
+    recipientEmail: "omar@dawwen.ai",
+    channel: "email",
+    subject: "ملخص مخرجات سبرنت الـ Pipeline والخطوات القادمة",
+    body: "أهلاً عمر،\n\nبناءً على اجتماعنا اليوم، نؤكد على إطلاق واجهات المتابعة ومحضر الاجتماع مع التذكيرات المقترحة بحلول الخميس القادم.\n\nتحياتي،\nفريق العمل",
+    status: "draft",
+    sentAt: null,
+    createdAt: new Date(Date.now() - 3600000).toISOString(),
+    updatedAt: new Date(Date.now() - 3600000).toISOString(),
+  },
+];
+
+const DEMO_REMINDERS_STORE: Reminder[] = [
+  {
+    id: "remind-demo-1",
+    userId: "usr-demo",
+    meetingId: "demo-meet-01",
+    taskId: "t-1",
+    remindAt: new Date(Date.now() + 86400000).toISOString(),
+    channel: "console",
+    status: "SCHEDULED",
+    sentAt: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    meeting: { id: "demo-meet-01", title: "مراجعة السبرنت الأسبوعي" },
+  },
+];
+
+/**
+ * Ask AI Agent query (scoped to meeting or global)
+ */
+export async function askAgent(
+  query: string,
+  meetingId?: string,
+  conversationHistory?: Array<{ role: "user" | "assistant"; content: string }>,
+): Promise<AgentResponse> {
+  try {
+    const res = await authFetch("/api/chat", {
+      method: "POST",
+      body: JSON.stringify({ query, meetingId, conversationHistory }),
+    });
+    if (res.ok) return res.json();
+  } catch {
+    // Offline / Demo fallback
+  }
+
+  const clean = query.trim().toLowerCase();
+  const isEnglish = /[a-zA-Z]/.test(clean) && !/[\u0600-\u06FF]/.test(clean);
+
+  // Intent 1: Scheduling proposal
+  if (clean.includes("احجز") || clean.includes("اقترح اجتماع") || clean.includes("schedule") || clean.includes("book")) {
+    const newProp: Proposal = {
+      id: `prop-ai-${Date.now()}`,
+      userId: "usr-demo",
+      meetingId: meetingId || "demo-meet-01",
+      actionType: "SCHEDULE_MEETING",
+      payload: {
+        title: query.replace(/.*(احجز|اقترح|schedule|book)\s+/i, "") || "اجتماع متابعة مقترح",
+        proposedDatetime: new Date(Date.now() + 86400000).toISOString(),
+        place: "Google Meet",
+        durationMinutes: 45,
+      },
+      status: "PENDING_APPROVAL",
+      reason: `اقتراح بناءً على طلب الشات: "${query}"`,
+      createdAt: new Date().toISOString(),
+    };
+    DEMO_PROPOSALS_STORE.unshift(newProp);
+
+    return {
+      answer: isEnglish
+        ? "A new meeting proposal has been generated and placed in your Proposals Inbox awaiting your approval."
+        : `تم تجهيز مقترح حجز اجتماع جديد وهو بانتظار موافقتك الصريحة في صندوق المقترحات.`,
+      citations: [],
+      proposalsCreated: [newProp],
+      draftsCreated: [],
+      toolsUsed: ["propose_event"],
+      honestUnknown: false,
+    };
+  }
+
+  // Intent 2: Reminder proposal
+  if (clean.includes("فكرني") || clean.includes("تذكير") || clean.includes("remind")) {
+    const remProp: Proposal = {
+      id: `prop-rem-${Date.now()}`,
+      userId: "usr-demo",
+      meetingId: meetingId || "demo-meet-01",
+      actionType: "SEND_REMINDER",
+      payload: {
+        note: query.replace(/.*(فكرني|تذكير|remind)\s+/i, "") || "تذكير بمهمة",
+        remindAt: new Date(Date.now() + 10800000).toISOString(),
+      },
+      status: "PENDING_APPROVAL",
+      reason: `طلب تذكير عبر الشات`,
+      createdAt: new Date().toISOString(),
+    };
+    DEMO_PROPOSALS_STORE.unshift(remProp);
+
+    return {
+      answer: isEnglish
+        ? "A reminder proposal has been prepared in your Proposals Inbox awaiting your approval."
+        : "تم إنشاء مقترح تذكير جديد وهو بانتظار موافقتك في صندوق المقترحات.",
+      citations: [],
+      proposalsCreated: [remProp],
+      draftsCreated: [],
+      toolsUsed: ["create_reminder"],
+      honestUnknown: false,
+    };
+  }
+
+  // Intent 3: Draft message
+  if (clean.includes("مسودة") || clean.includes("draft")) {
+    const newDraft: FollowUpDraft = {
+      id: `draft-ai-${Date.now()}`,
+      meetingId: meetingId || "demo-meet-01",
+      recipientName: "العميل",
+      recipientEmail: "client@example.com",
+      channel: "email",
+      subject: "متابعة مخرجات الاجتماع",
+      body: "عزيزي العميل،\n\nنشكركم على الاجتماع المثمر اليوم ونؤكد لكم التزامنا بجدول التسليم المتفق عليه.\n\nمع التحية،\nفريق العمل",
+      status: "draft",
+      sentAt: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    DEMO_DRAFTS_STORE.unshift(newDraft);
+
+    return {
+      answer: isEnglish
+        ? "A follow-up email draft has been created and saved in the Follow-up tab."
+        : "تمت كتابة مسودة رسالة المتابعة وحفظها بنجاح في تبويب 'المتابعة'.",
+      citations: [],
+      proposalsCreated: [],
+      draftsCreated: [newDraft],
+      toolsUsed: ["draft_message"],
+      honestUnknown: false,
+    };
+  }
+
+  // Intent 4: Check if question mentions meeting content
+  const matchesContent =
+    clean.includes("auth") ||
+    clean.includes("bedrock") ||
+    clean.includes("سارة") ||
+    clean.includes("أحمد") ||
+    clean.includes("localstack") ||
+    clean.includes("pipeline") ||
+    clean.includes("مهام") ||
+    clean.includes("قرارات");
+
+  if (!matchesContent) {
+    // Invariant 3: Honesty on unknown query
+    return {
+      answer: isEnglish
+        ? "This topic was not mentioned in the recorded meetings. I could not find relevant transcript segments or decisions regarding this question."
+        : "لم يُذكر هذا الموضوع في الاجتماعات المتوفرة. لم أجد في التفريغ الصوتي أو القرارات أي إشارة متعلقة بهذا السؤال.",
+      citations: [],
+      proposalsCreated: [],
+      draftsCreated: [],
+      toolsUsed: ["search_meetings"],
+      honestUnknown: true,
+    };
+  }
+
+  // Answer with citations (Invariant 2)
+  return {
+    answer: isEnglish
+      ? 'Regarding your inquiry: Sarah confirmed completion of the LocalAuthProvider and tenant isolation tests [00:15], while Ahmed agreed to deliver the UI review screens before the end of the week [00:28].'
+      : 'بناءً على ما ورد في الاجتماع: أكدت المهندسة سارة اكتمال الـ LocalAuthProvider واختبارات العزل [00:15]، بينما تم الاتفاق على تسليم شاشات مراجعة الواجهات قبل نهاية الأسبوع [00:28].',
+    citations: [
+      {
+        meetingId: "demo-meet-01",
+        meetingTitle: "مراجعة السبرنت الأسبوعي",
+        timestamp: "[00:15]",
+        text: "سارة أكدت اكتمال الـ LocalAuthProvider وتأمينه بـ scryptSync مع نجاح اختبارات العزل بين المستأجرين.",
+        score: 0.95,
+        matchType: "hybrid",
+      },
+      {
+        meetingId: "demo-meet-01",
+        meetingTitle: "مراجعة السبرنت الأسبوعي",
+        timestamp: "[00:28]",
+        text: "تم الاتفاق على اعتماد الـ Auth API وتسليم مهام الـ UI قبل نهاية الأسبوع.",
+        score: 0.9,
+        matchType: "hybrid",
+      },
+    ],
+    proposalsCreated: [],
+    draftsCreated: [],
+    toolsUsed: ["search_meetings"],
+    honestUnknown: false,
+  };
+}
+
+/**
+ * Hybrid Search endpoint across meetings
+ */
+export async function hybridSearch(
+  query: string,
+  meetingId?: string,
+): Promise<{ results: SearchCitation[] }> {
+  try {
+    const qParams = new URLSearchParams({ q: query });
+    if (meetingId) qParams.set("meetingId", meetingId);
+    const res = await authFetch(`/api/search?${qParams.toString()}`);
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback
+  }
+
+  if (!query.trim()) return { results: [] };
+
+  const clean = query.toLowerCase();
+  const allResults: SearchCitation[] = [
+    {
+      meetingId: "demo-meet-01",
+      meetingTitle: "مراجعة السبرنت الأسبوعي",
+      timestamp: "[00:15]",
+      text: "سارة أكدت اكتمال الـ LocalAuthProvider وتأمينه بـ scryptSync مع نجاح اختبارات العزل.",
+      score: 0.95,
+      matchType: "hybrid",
+    },
+    {
+      meetingId: "demo-meet-01",
+      meetingTitle: "مراجعة السبرنت الأسبوعي",
+      timestamp: "[00:45]",
+      text: "عمر خالد: نحتاج تفعيل تذكيرات المتابعة ومسودات الرسائل للعملاء.",
+      score: 0.88,
+      matchType: "keyword",
+    },
+  ];
+  const demoResults = allResults.filter(
+    (r) => r.text.toLowerCase().includes(clean) || clean.includes("سبرنت") || clean.includes("auth"),
+  );
+
+  return { results: demoResults };
+}
+
+/**
+ * Follow-up Drafts
+ */
+export async function fetchDrafts(meetingId?: string): Promise<{ drafts: FollowUpDraft[] }> {
+  try {
+    const url = meetingId ? `/api/meetings/${meetingId}/drafts` : "/api/drafts";
+    const res = await authFetch(url);
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback
+  }
+
+  const drafts = meetingId
+    ? DEMO_DRAFTS_STORE.filter((d) => d.meetingId === meetingId)
+    : [...DEMO_DRAFTS_STORE];
+  return { drafts };
+}
+
+export async function createDraft(data: Partial<FollowUpDraft>): Promise<{ draft: FollowUpDraft }> {
+  try {
+    const res = await authFetch("/api/drafts", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback
+  }
+
+  const draft: FollowUpDraft = {
+    id: `draft-${Date.now()}`,
+    meetingId: data.meetingId || "demo-meet-01",
+    recipientEmail: data.recipientEmail || null,
+    recipientName: data.recipientName || null,
+    channel: data.channel || "email",
+    subject: data.subject || "مسودة جديدة",
+    body: data.body || "",
+    status: "draft",
+    sentAt: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  DEMO_DRAFTS_STORE.unshift(draft);
+  return { draft };
+}
+
+export async function updateDraft(
+  draftId: string,
+  data: Partial<FollowUpDraft>,
+): Promise<{ draft: FollowUpDraft }> {
+  try {
+    const res = await authFetch(`/api/drafts/${draftId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback
+  }
+
+  const draft = DEMO_DRAFTS_STORE.find((d) => d.id === draftId);
+  if (draft) {
+    Object.assign(draft, data, { updatedAt: new Date().toISOString() });
+    return { draft };
+  }
+  return { draft: DEMO_DRAFTS_STORE[0]! };
+}
+
+export async function proposeSendDraft(draftId: string): Promise<{ proposal: Proposal }> {
+  try {
+    const res = await authFetch(`/api/drafts/${draftId}/propose-send`, {
+      method: "POST",
+    });
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback
+  }
+
+  const draft = DEMO_DRAFTS_STORE.find((d) => d.id === draftId);
+  const proposal: Proposal = {
+    id: `prop-send-${Date.now()}`,
+    userId: "usr-demo",
+    meetingId: draft?.meetingId || null,
+    actionType: "DRAFT_EMAIL",
+    payload: {
+      draftId,
+      recipientEmail: draft?.recipientEmail,
+      recipientName: draft?.recipientName,
+      subject: draft?.subject,
+      body: draft?.body || "",
+      channel: draft?.channel || "email",
+    },
+    status: "PENDING_APPROVAL",
+    reason: `طلب إرسال مسودة الرسالة إلى: ${draft?.recipientEmail || "العميل"}`,
+    createdAt: new Date().toISOString(),
+  };
+  DEMO_PROPOSALS_STORE.unshift(proposal);
+  return { proposal };
+}
+
+/**
+ * Reminders
+ */
+export async function fetchReminders(meetingId?: string): Promise<{ reminders: Reminder[] }> {
+  try {
+    const url = meetingId ? `/api/meetings/${meetingId}/reminders` : "/api/reminders";
+    const res = await authFetch(url);
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback
+  }
+
+  const reminders = meetingId
+    ? DEMO_REMINDERS_STORE.filter((r) => r.meetingId === meetingId)
+    : [...DEMO_REMINDERS_STORE];
+  return { reminders };
+}
+
+export async function createReminder(
+  data: Partial<Reminder> & { note?: string; proposeOnly?: boolean },
+): Promise<{ reminder?: Reminder; proposal?: Proposal; isProposal: boolean }> {
+  try {
+    const res = await authFetch("/api/reminders", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback
+  }
+
+  if (data.proposeOnly) {
+    const prop: Proposal = {
+      id: `prop-rem-${Date.now()}`,
+      userId: "usr-demo",
+      meetingId: data.meetingId || null,
+      actionType: "SEND_REMINDER",
+      payload: {
+        meetingId: data.meetingId,
+        taskId: data.taskId,
+        remindAt: data.remindAt || new Date(Date.now() + 86400000).toISOString(),
+        channel: data.channel || "console",
+        note: data.note || "تذكير جديد",
+      },
+      status: "PENDING_APPROVAL",
+      reason: data.note || "طلب تذكير جديد",
+      createdAt: new Date().toISOString(),
+    };
+    DEMO_PROPOSALS_STORE.unshift(prop);
+    return { proposal: prop, isProposal: true };
+  }
+
+  const reminder: Reminder = {
+    id: `remind-${Date.now()}`,
+    userId: "usr-demo",
+    meetingId: data.meetingId || null,
+    taskId: data.taskId || null,
+    remindAt: data.remindAt || new Date(Date.now() + 86400000).toISOString(),
+    channel: data.channel || "console",
+    status: "SCHEDULED",
+    sentAt: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  DEMO_REMINDERS_STORE.unshift(reminder);
+  return { reminder, isProposal: false };
+}
+
+export async function cancelReminder(reminderId: string): Promise<{ reminder: Reminder }> {
+  try {
+    const res = await authFetch(`/api/reminders/${reminderId}/cancel`, {
+      method: "POST",
+    });
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback
+  }
+
+  const found = DEMO_REMINDERS_STORE.find((r) => r.id === reminderId);
+  if (found) {
+    found.status = "CANCELLED";
+    return { reminder: found };
+  }
+  return { reminder: DEMO_REMINDERS_STORE[0]! };
 }

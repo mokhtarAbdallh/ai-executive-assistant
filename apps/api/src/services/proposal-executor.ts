@@ -1,9 +1,17 @@
 import type { Proposal, TenantContext } from "@dawwen/db";
-import { ProposalStatus, ProposalActionType } from "@dawwen/db";
-import type { ProposalRepository } from "@dawwen/db";
+import { ProposalStatus, ProposalActionType, ReminderStatus } from "@dawwen/db";
+import type { Priority } from "@prisma/client";
+import type {
+  ProposalRepository,
+  CalendarConnectionRepository,
+  FollowUpDraftRepository,
+  ReminderRepository,
+  TaskRepository,
+} from "@dawwen/db";
 import type { CalendarProvider } from "./calendar.js";
 import type { TokenEncryptor, GoogleOAuthTokens } from "@dawwen/shared";
-import type { CalendarConnectionRepository } from "@dawwen/db";
+import type { NotificationProvider } from "./notification.js";
+import { ConsoleNotificationProvider } from "./notification.js";
 
 export interface ExecutionResult {
   proposalId: string;
@@ -21,12 +29,20 @@ export class ProposalNotApprovedError extends Error {
 }
 
 export class ProposalExecutor {
+  private readonly notificationProvider: NotificationProvider;
+
   constructor(
     private readonly proposalRepository: ProposalRepository,
     private readonly calendarConnectionRepository: CalendarConnectionRepository,
     private readonly calendarProvider: CalendarProvider,
     private readonly tokenEncryptor: TokenEncryptor,
-  ) {}
+    private readonly draftRepository?: FollowUpDraftRepository,
+    private readonly reminderRepository?: ReminderRepository,
+    private readonly taskRepository?: TaskRepository,
+    notificationProvider?: NotificationProvider,
+  ) {
+    this.notificationProvider = notificationProvider ?? new ConsoleNotificationProvider();
+  }
 
   /**
    * Hard Invariant 1:
@@ -58,14 +74,24 @@ export class ProposalExecutor {
     try {
       let executionDetails: Record<string, unknown> = {};
 
-      if (proposal.actionType === ProposalActionType.SCHEDULE_MEETING) {
-        executionDetails = await this.executeScheduleMeeting(context, proposal);
-      } else {
-        // Stubs for future proposal action types (DRAFT_EMAIL, SEND_REMINDER, CREATE_TASK)
-        executionDetails = {
-          executed: true,
-          message: `Proposal action '${proposal.actionType}' staged for execution.`,
-        };
+      switch (proposal.actionType) {
+        case ProposalActionType.SCHEDULE_MEETING:
+          executionDetails = await this.executeScheduleMeeting(context, proposal);
+          break;
+        case ProposalActionType.DRAFT_EMAIL:
+          executionDetails = await this.executeDraftEmail(context, proposal);
+          break;
+        case ProposalActionType.SEND_REMINDER:
+          executionDetails = await this.executeSendReminder(context, proposal);
+          break;
+        case ProposalActionType.CREATE_TASK:
+          executionDetails = await this.executeCreateTask(context, proposal);
+          break;
+        default:
+          executionDetails = {
+            executed: true,
+            message: `Proposal action '${proposal.actionType}' handled.`,
+          };
       }
 
       await this.proposalRepository.markExecuted(context, proposalId);
@@ -136,6 +162,149 @@ export class ProposalExecutor {
       bookedTime: start.toISOString(),
       title,
       location: payload.place || "Google Meet",
+    };
+  }
+
+  private async executeDraftEmail(
+    context: TenantContext,
+    proposal: Proposal,
+  ): Promise<Record<string, unknown>> {
+    const payload = proposal.payload as {
+      meetingId?: string;
+      recipientEmail?: string;
+      recipientName?: string;
+      channel?: string;
+      subject?: string;
+      body: string;
+      draftId?: string;
+    };
+
+    // If draft already exists, update status to sent; otherwise create sent draft if draftRepository available
+    let draftId = payload.draftId;
+    if (this.draftRepository) {
+      if (draftId) {
+        await this.draftRepository.update(context, draftId, {
+          status: "sent",
+          sentAt: new Date(),
+        });
+      } else if (proposal.meetingId || payload.meetingId) {
+        const mId = proposal.meetingId || payload.meetingId!;
+        const draft = await this.draftRepository.create(context, {
+          meetingId: mId,
+          recipientEmail: payload.recipientEmail,
+          recipientName: payload.recipientName,
+          channel: payload.channel ?? "email",
+          subject: payload.subject,
+          body: payload.body,
+          status: "sent",
+        });
+        draftId = draft.id;
+      }
+    }
+
+    // Send via notification provider
+    const sendResult = await this.notificationProvider.sendEmail({
+      to: payload.recipientEmail || "client@example.com",
+      subject: payload.subject || "متابعة الاجتماع",
+      body: payload.body,
+    });
+
+    return {
+      draftId,
+      messageId: sendResult.messageId,
+      channel: sendResult.channel,
+      recipientEmail: payload.recipientEmail,
+    };
+  }
+
+  private async executeSendReminder(
+    context: TenantContext,
+    proposal: Proposal,
+  ): Promise<Record<string, unknown>> {
+    const payload = proposal.payload as {
+      taskId?: string;
+      meetingId?: string;
+      remindAt?: string;
+      channel?: string;
+      note?: string;
+      reminderId?: string;
+    };
+
+    const remindAt = payload.remindAt ? new Date(payload.remindAt) : new Date(Date.now() + 3600000);
+    let reminderId = payload.reminderId;
+
+    if (this.reminderRepository) {
+      if (reminderId) {
+        await this.reminderRepository.updateStatus(context, reminderId, ReminderStatus.SENT, new Date());
+      } else {
+        const reminder = await this.reminderRepository.create(context, {
+          taskId: payload.taskId,
+          meetingId: proposal.meetingId || payload.meetingId,
+          remindAt,
+          channel: payload.channel ?? "console",
+          status: ReminderStatus.SCHEDULED,
+        });
+        reminderId = reminder.id;
+      }
+    }
+
+    const notifResult = await this.notificationProvider.sendReminder({
+      recipientId: context.userId,
+      channel: payload.channel ?? "console",
+      remindAt,
+      note: payload.note || "تذكير بمهمة من اجتماع دوّن",
+    });
+
+    return {
+      reminderId,
+      messageId: notifResult.messageId,
+      remindAt: remindAt.toISOString(),
+    };
+  }
+
+  private async executeCreateTask(
+    context: TenantContext,
+    proposal: Proposal,
+  ): Promise<Record<string, unknown>> {
+    const payload = proposal.payload as {
+      meetingId?: string;
+      task?: string;
+      title?: string;
+      owner?: string | null;
+      ownerName?: string | null;
+      due?: string | null;
+      dueDate?: string | null;
+      priority?: string;
+      sourceTs?: string | null;
+    };
+
+    const meetingId = proposal.meetingId || payload.meetingId;
+    const title = payload.title || payload.task || "مهمة متابعة";
+    const ownerName = payload.ownerName ?? payload.owner ?? null;
+    const dueDate = payload.dueDate
+      ? new Date(payload.dueDate)
+      : payload.due
+        ? new Date(payload.due)
+        : null;
+
+    if (!this.taskRepository || !meetingId) {
+      return { created: true, title };
+    }
+
+    const task = await this.taskRepository.create(context, meetingId, {
+      title,
+      ownerName,
+      dueDate,
+      priority: (payload.priority as Priority) ?? "MEDIUM",
+      sourceTs: payload.sourceTs ?? null,
+      needsReview: !ownerName || !dueDate,
+    });
+
+    return {
+      taskId: task.id,
+      title: task.title,
+      ownerName: task.ownerName,
+      dueDate: task.dueDate?.toISOString() ?? null,
     };
   }
 }

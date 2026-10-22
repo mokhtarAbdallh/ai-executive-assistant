@@ -6,6 +6,8 @@ import { MeetingDetail } from "./components/MeetingDetail";
 import { NewMeetingModal } from "./components/NewMeetingModal";
 import { CalendarView } from "./components/CalendarView";
 import { ProposalsInbox } from "./components/ProposalsInbox";
+import { AskChat } from "./components/AskChat";
+import { SearchModal } from "./components/SearchModal";
 import {
   fetchHealth,
   fetchMeetings,
@@ -13,15 +15,14 @@ import {
   deleteMeeting,
   createMeeting,
   processDemoMeeting,
-  fetchProposals,
 } from "./api";
-import type { MeetingSummary, MeetingDetail as MeetingDetailType } from "./types";
+import type { MeetingSummary, MeetingDetail as MeetingDetailType, SearchCitation } from "./types";
 
 export function App() {
   const { i18n } = useTranslation();
 
   // Navigation State
-  const [currentView, setCurrentView] = useState<"list" | "detail" | "calendar" | "proposals">("list");
+  const [currentView, setCurrentView] = useState<"list" | "detail" | "calendar" | "proposals" | "chat">("list");
   const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
   const [pendingProposalsCount, setPendingProposalsCount] = useState<number>(2);
 
@@ -34,6 +35,7 @@ export function App() {
   // Modal State
   const [isNewMeetingOpen, setIsNewMeetingOpen] = useState(false);
   const [initialMeetingTitle, setInitialMeetingTitle] = useState("");
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
 
   // Health State
   const [healthStatus, setHealthStatus] = useState<"connecting" | "connected" | "offline">(
@@ -48,6 +50,18 @@ export function App() {
     document.documentElement.setAttribute("dir", dir);
     document.documentElement.setAttribute("lang", lang);
   }, [i18n, i18n.language]);
+
+  // Global Ctrl+K / Cmd+K listener
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault();
+        setIsSearchOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   // Load meetings
   const loadMeetings = useCallback(async () => {
@@ -102,7 +116,7 @@ export function App() {
       setActiveMeetingDetail(detail);
       setCurrentView("detail");
     } catch (err: unknown) {
-      alert("تعذر جلب تفاصيل الاجتماع: " + (err instanceof Error ? err.message : String(err)));
+      setError(err instanceof Error ? err.message : "فشل تحميل تفاصيل الاجتماع");
     } finally {
       setIsLoading(false);
     }
@@ -114,20 +128,21 @@ export function App() {
       await deleteMeeting(id);
       setMeetings((prev) => prev.filter((m) => m.id !== id));
       if (selectedMeetingId === id) {
-        setCurrentView("list");
+        setSelectedMeetingId(null);
         setActiveMeetingDetail(null);
+        setCurrentView("list");
       }
     } catch (err: unknown) {
-      alert("فشل حذف الاجتماع: " + (err instanceof Error ? err.message : String(err)));
+      alert(err instanceof Error ? err.message : "فشل حذف الاجتماع");
     }
   };
 
-  // Load Demo Meeting Shortcut
+  // Load demo meeting directly
   const handleLoadDemoMeeting = async () => {
     setIsLoading(true);
     try {
       const created = await createMeeting({
-        title: "اجتماع السبرنت التجريبي — التحقق من الـ Auth والـ Bedrock Pipeline",
+        title: "اجتماع تسعير الباقات وسبرنت الـ Agent (Demo)",
         language: "mixed",
       });
       const processed = await processDemoMeeting(created.id);
@@ -136,23 +151,19 @@ export function App() {
       setCurrentView("detail");
       void loadMeetings();
     } catch (err: unknown) {
-      alert("حدث خطأ أثناء تشغيل الديمو التجريبي: " + (err instanceof Error ? err.message : String(err)));
+      setError(err instanceof Error ? err.message : "فشل تحميل الاجتماع التجريبي");
+    } finally {
       setIsLoading(false);
     }
   };
 
-  // Load initial proposals count for badge
-  useEffect(() => {
-    void fetchProposals("PENDING_APPROVAL")
-      .then((props) => {
-        setPendingProposalsCount(props.length);
-      })
-      .catch(() => {});
-  }, []);
+  const handleSearchResultClick = (citation: SearchCitation) => {
+    void handleSelectMeeting(citation.meetingId);
+  };
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100 font-sans selection:bg-cyan-500 selection:text-white antialiased">
-      {/* Navigation Bar */}
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500/20 selection:text-cyan-200">
+      {/* Top Navbar */}
       <Navbar
         healthStatus={healthStatus}
         uptime={uptime}
@@ -160,7 +171,7 @@ export function App() {
         pendingProposalsCount={pendingProposalsCount}
         onNavigate={(view) => {
           setCurrentView(view);
-          if (view === "list") void loadMeetings();
+          if (view === "list") setSelectedMeetingId(null);
         }}
         onNewMeetingClick={() => {
           setInitialMeetingTitle("");
@@ -171,6 +182,7 @@ export function App() {
           setSelectedMeetingId(null);
           void loadMeetings();
         }}
+        onSearchClick={() => setIsSearchOpen(true)}
       />
 
       {/* Main Content Area */}
@@ -203,6 +215,15 @@ export function App() {
             onProposalsCountChange={setPendingProposalsCount}
             onNavigateToCalendar={() => setCurrentView("calendar")}
           />
+        ) : currentView === "chat" ? (
+          <div className="h-[750px] w-full flex flex-col">
+            <AskChat
+              onCitationClick={handleSearchResultClick}
+              onProposalApproved={() => {
+                setPendingProposalsCount((prev) => Math.max(0, prev - 1));
+              }}
+            />
+          </div>
         ) : (
           <MeetingsList
             meetings={meetings}
@@ -219,6 +240,13 @@ export function App() {
           />
         )}
       </main>
+
+      {/* Global Search Modal */}
+      <SearchModal
+        isOpen={isSearchOpen}
+        onClose={() => setIsSearchOpen(false)}
+        onSelectResult={handleSearchResultClick}
+      />
 
       {/* New Meeting Modal */}
       <NewMeetingModal
@@ -240,7 +268,7 @@ export function App() {
       <footer className="border-t border-slate-800/80 py-6 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div>
-            دوّن (Dawwen) — المساعد الذكي للاجتماعات • المرحلة الرابعة (Calendar & Proposals Inbox)
+            دوّن (Dawwen) — المساعد الذكي للاجتماعات • المرحلة الخامسة (Follow-up & Agent)
           </div>
           <div className="text-[11px] text-slate-500">
             RTL-First • Egyptian Arabic & English Code-Switching • Human-In-The-Loop

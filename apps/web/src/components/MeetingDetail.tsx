@@ -17,6 +17,8 @@ import {
   ShieldCheck,
   History,
   FileText,
+  Mail,
+  Bot,
 } from "lucide-react";
 import type { MeetingDetail as MeetingDetailType, Task, Decision } from "../types";
 import {
@@ -25,6 +27,8 @@ import {
   updateDecision,
   approveAllMeetingItems,
 } from "../api";
+import { AskChat } from "./AskChat";
+import { FollowUpTab } from "./FollowUpTab";
 
 interface MeetingDetailProps {
   meeting: MeetingDetailType;
@@ -42,7 +46,7 @@ export function MeetingDetail({
 
   const [meeting, setMeeting] = useState<MeetingDetailType>(initialMeeting);
   const [activeTab, setActiveTab] = useState<
-    "summary" | "decisions" | "tasks" | "proposals" | "transcript" | "history"
+    "summary" | "decisions" | "tasks" | "proposals" | "followup" | "ask" | "transcript" | "history"
   >("summary");
 
   // Editable title state
@@ -354,6 +358,30 @@ export function MeetingDetail({
               {meeting.proposals.length}
             </span>
           )}
+        </button>
+
+        <button
+          onClick={() => setActiveTab("followup")}
+          className={`flex items-center gap-2 px-4 py-3 border-b-2 transition whitespace-nowrap cursor-pointer ${
+            activeTab === "followup"
+              ? "border-cyan-500 text-cyan-400 bg-cyan-500/5 font-bold"
+              : "border-transparent text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Mail className="w-4 h-4" />
+          <span>{t("details.tabs.followup")}</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("ask")}
+          className={`flex items-center gap-2 px-4 py-3 border-b-2 transition whitespace-nowrap cursor-pointer ${
+            activeTab === "ask"
+              ? "border-cyan-500 text-cyan-400 bg-cyan-500/5 font-bold"
+              : "border-transparent text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Bot className="w-4 h-4" />
+          <span>{t("details.tabs.ask")}</span>
         </button>
 
         <button
@@ -789,6 +817,44 @@ export function MeetingDetail({
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Tab Content: Follow-up & Reminders */}
+      {activeTab === "followup" && (
+        <FollowUpTab
+          meetingId={meeting.id}
+          meetingTitle={meeting.title}
+          onProposalCreated={(prop) => {
+            setMeeting((prev) => ({
+              ...prev,
+              proposals: [prop, ...prev.proposals],
+            }));
+          }}
+        />
+      )}
+
+      {/* Tab Content: Ask Chat Agent */}
+      {activeTab === "ask" && (
+        <div className="h-[600px]">
+          <AskChat
+            meetingId={meeting.id}
+            meetingTitle={meeting.title}
+            onCitationClick={(citation) => {
+              if (citation.segmentId) {
+                setActiveSegmentId(citation.segmentId);
+                setActiveTab("transcript");
+              }
+            }}
+            onProposalApproved={(prop) => {
+              setMeeting((prev) => ({
+                ...prev,
+                proposals: prev.proposals.map((p) =>
+                  p.id === prop.id ? prop : p,
+                ),
+              }));
+            }}
+          />
         </div>
       )}
 

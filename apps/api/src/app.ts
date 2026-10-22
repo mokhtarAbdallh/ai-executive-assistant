@@ -14,6 +14,8 @@ import {
   TaskRepository,
   DecisionRepository,
   CalendarConnectionRepository,
+  FollowUpDraftRepository,
+  ReminderRepository,
 } from "@dawwen/db";
 import { loggerOptions } from "./logger.js";
 import { healthRoutes } from "./routes/health.js";
@@ -24,6 +26,9 @@ import { proposalRoutes } from "./routes/proposals.js";
 import { calendarRoutes } from "./routes/calendar.js";
 import { uploadRoutes } from "./routes/upload.js";
 import { meetingsRoutes } from "./routes/meetings.js";
+import { chatRoutes } from "./routes/chat.js";
+import { searchRoutes } from "./routes/search.js";
+import { followUpRoutes } from "./routes/follow-up.js";
 import { LocalAuthProvider } from "./auth/local.provider.js";
 import { CognitoAuthProvider } from "./auth/cognito.provider.js";
 import { createAuthMiddleware } from "./auth/middleware.js";
@@ -34,6 +39,8 @@ import {
   FakeCalendarProvider,
 } from "./services/calendar.js";
 import { ProposalExecutor } from "./services/proposal-executor.js";
+import { SearchService } from "./services/search.js";
+import { AgentService } from "./services/agent.js";
 
 export interface AppOptions {
   corsOrigins: string[];
@@ -93,6 +100,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const taskRepository = new TaskRepository(prisma);
   const decisionRepository = new DecisionRepository(prisma);
   const calendarConnectionRepository = new CalendarConnectionRepository(prisma);
+  const draftRepository = new FollowUpDraftRepository(prisma);
+  const reminderRepository = new ReminderRepository(prisma);
 
   const secret = opts.appSecret || process.env.APP_SECRET || "default-app-secret-at-least-32-characters-long!";
   const keyProvider = new HkdfKeyProvider(secret);
@@ -104,6 +113,19 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     calendarConnectionRepository,
     calendarProvider,
     tokenEncryptor,
+    draftRepository,
+    reminderRepository,
+    taskRepository,
+  );
+
+  const searchService = new SearchService(prisma);
+  const agentService = new AgentService(
+    searchService,
+    taskRepository,
+    proposalRepository,
+    draftRepository,
+    reminderRepository,
+    meetingRepository,
   );
 
   // Invariant 6: every route lives under /api (the ALB only forwards /api/* to this service).
@@ -126,6 +148,13 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         taskRepository,
         decisionRepository,
         prisma,
+      });
+      await api.register(chatRoutes, { agentService });
+      await api.register(searchRoutes, { searchService });
+      await api.register(followUpRoutes, {
+        draftRepository,
+        reminderRepository,
+        proposalRepository,
       });
     },
     { prefix: API_PREFIX },

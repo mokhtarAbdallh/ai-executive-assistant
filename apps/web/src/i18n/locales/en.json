@@ -87,6 +87,8 @@
       "decisions": "Decisions",
       "tasks": "Action Items",
       "proposals": "Proposals & Calendar",
+      "followup": "Follow-up",
+      "ask": "Ask AI",
       "transcript": "Full Transcript",
       "history": "Edit History"
     },

@@ -172,5 +172,68 @@ export interface MeetingDetail extends MeetingSummary {
   tasks: Task[];
   openQuestions: OpenQuestion[];
   proposals: Proposal[];
+  followUpDrafts?: FollowUpDraft[];
+  reminders?: Reminder[];
   editHistories: EditHistory[];
+}
+
+export interface FollowUpDraft {
+  id: string;
+  meetingId: string;
+  recipientEmail: string | null;
+  recipientName: string | null;
+  channel: string;
+  subject: string | null;
+  body: string;
+  status: string; // 'draft' | 'sent'
+  sentAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Reminder {
+  id: string;
+  userId: string;
+  meetingId: string | null;
+  taskId: string | null;
+  remindAt: string;
+  channel: string;
+  status: "SCHEDULED" | "SENT" | "CANCELLED";
+  sentAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  task?: Task;
+  meeting?: { id: string; title: string };
+}
+
+export interface SearchCitation {
+  meetingId: string;
+  meetingTitle: string;
+  segmentId?: string;
+  timestamp: string;
+  startMs?: number;
+  text: string;
+  speakerLabel?: string | null;
+  score: number;
+  matchType: "hybrid" | "keyword" | "semantic";
+}
+
+export interface AgentResponse {
+  answer: string;
+  citations: SearchCitation[];
+  proposalsCreated: Proposal[];
+  draftsCreated: FollowUpDraft[];
+  toolsUsed: string[];
+  honestUnknown: boolean;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string;
+  citations?: SearchCitation[];
+  proposals?: Proposal[];
+  drafts?: FollowUpDraft[];
+  honestUnknown?: boolean;
 }

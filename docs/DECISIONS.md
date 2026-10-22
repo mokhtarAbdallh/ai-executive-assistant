@@ -79,3 +79,11 @@ One short entry per decision. Newer entries may supersede older ones (marked exp
 ## ADR-012: Upload size enforcement
 - Presigned PUT cannot enforce a size range, so the URL is signed with the exact declared
   `ContentLength` (≤ configured max) and `ContentType`; the worker re-checks with `HeadObject`.
+
+## ADR-013: Phase 5 Follow-up, Reminders, Hybrid Search, and Ask Agent Invariants
+- **Hard Invariant 1 (HITL):** Action tools in the Ask agent (`propose_event`, `create_reminder`, and follow-up message dispatch) NEVER perform direct external actions. They generate `Proposal` rows with `PENDING_APPROVAL`. Only authenticated user approval via `/api/proposals/:id/approve?execute=true` executes side effects via `ProposalExecutorService`.
+- **Hard Invariant 2 (Source Citations):** Answers to questions regarding past meetings cite meeting title + timestamp formatted as `[MM:SS]` alongside transcript segment IDs.
+- **Hard Invariant 3 (Honesty & No Fabrication):** For topics with confidence below the threshold or absent from transcripts, the agent returns an honest disclaimer (`honestUnknown: true`, "لم يُذكر هذا الموضوع في الاجتماعات المتوفرة") rather than hallucinating details.
+- **Hybrid Search Scoring:** Combines exact term matching, decision/topic title boosts, and keyword match ratio calculation (`matchedKeywords / totalKeywords`) to prevent high score anomalies from single generic common words.
+- **Notifications & Follow-ups:** `NotificationProvider` interface backed by `ConsoleNotificationProvider` for local/demo operation without requiring immediate SES IAM mutation.
+

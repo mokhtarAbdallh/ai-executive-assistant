@@ -1,16 +1,24 @@
 import { useTranslation } from "react-i18next";
 import { Wordmark } from "./Wordmark";
 import { setLanguage } from "../i18n";
-import { Activity, ShieldCheck, Plus, CheckCircle2, AlertCircle } from "lucide-react";
+import {
+  Activity,
+  Plus,
+  CheckCircle2,
+  AlertCircle,
+  Search,
+  Bot,
+} from "lucide-react";
 
 interface NavbarProps {
   healthStatus: "connecting" | "connected" | "offline";
   uptime: number | null;
-  currentView: "list" | "detail" | "calendar" | "proposals";
+  currentView: "list" | "detail" | "calendar" | "proposals" | "chat";
   pendingProposalsCount?: number;
-  onNavigate: (view: "list" | "calendar" | "proposals") => void;
+  onNavigate: (view: "list" | "calendar" | "proposals" | "chat") => void;
   onNewMeetingClick: () => void;
   onHomeClick: () => void;
+  onSearchClick?: () => void;
 }
 
 export function Navbar({
@@ -21,6 +29,7 @@ export function Navbar({
   onNavigate,
   onNewMeetingClick,
   onHomeClick,
+  onSearchClick,
 }: NavbarProps) {
   const { t, i18n } = useTranslation();
   const currentLang = i18n.language as "ar" | "en";
@@ -74,17 +83,43 @@ export function Navbar({
                 </span>
               )}
             </button>
+            <button
+              onClick={() => onNavigate("chat")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                currentView === "chat"
+                  ? "bg-slate-800 text-cyan-400 shadow-sm"
+                  : "text-slate-400 hover:text-white hover:bg-slate-900"
+              }`}
+            >
+              <Bot className="w-3.5 h-3.5 text-cyan-400" />
+              <span>{currentLang === "ar" ? "اسأل AI" : "Ask AI"}</span>
+            </button>
           </nav>
 
-          {/* Hard Invariant 1 Banner Pill */}
-          <div className="hidden xl:flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border border-cyan-500/20 bg-cyan-950/30 text-cyan-300">
-            <ShieldCheck className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-            <span className="truncate max-w-xs">{t("app.humanInTheLoopNotice")}</span>
-          </div>
+          {/* Search Trigger (Ctrl+K) */}
+          <button
+            onClick={onSearchClick}
+            className="hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-xl border border-slate-800 bg-slate-950/60 hover:bg-slate-800 text-slate-400 hover:text-slate-200 text-xs transition cursor-pointer"
+            title="البحث الهجين في الاجتماعات"
+          >
+            <Search className="w-3.5 h-3.5 text-cyan-400" />
+            <span>{currentLang === "ar" ? "بحث..." : "Search..."}</span>
+            <kbd className="px-1.5 py-0.2 rounded text-[10px] font-mono bg-slate-800 text-slate-400 border border-slate-700">
+              Ctrl+K
+            </kbd>
+          </button>
         </div>
 
         {/* Right Action Bar */}
         <div className="flex items-center gap-3">
+          {/* Mobile search icon */}
+          <button
+            onClick={onSearchClick}
+            className="lg:hidden p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+          >
+            <Search className="w-4 h-4 text-cyan-400" />
+          </button>
+
           {/* New Meeting CTA */}
           <button
             onClick={onNewMeetingClick}
