@@ -1,0 +1,19 @@
+project     = "meeting-assistant"
+environment = "dev"
+aws_region  = "eu-central-1" # choose after checking Bedrock/model availability
+
+# HTTPS (leave empty for HTTP-only dev)
+certificate_arn = ""
+
+# Where your frontend runs (needed for browser -> S3 direct upload)
+cors_origins = ["http://localhost:5173"]
+
+# Privacy: raw audio auto-deleted after N days
+audio_retention_days = 7
+
+# Cheaper NAT for dev; set false for prod (HA)
+single_nat_gateway = true
+
+# Container sizing / scaling
+worker_min = 1
+worker_max = 5

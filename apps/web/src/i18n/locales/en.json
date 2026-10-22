@@ -1,0 +1,23 @@
+{
+  "app": {
+    "name": "Dawwen",
+    "tagline": "AI Meeting Assistant for Egyptian Arabic & English",
+    "description": "Record or upload your meetings. Dawwen returns summaries, decisions, and action items with exact source attribution.",
+    "status": "Server Status",
+    "connected": "Connected",
+    "connecting": "Connecting...",
+    "offline": "Offline",
+    "language": "Language",
+    "arabic": "العربية (مصر)",
+    "english": "English",
+    "humanInTheLoopNotice": "Human-in-the-loop: No calendar bookings or client messages are ever sent without your explicit approval."
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "meetings": "Meetings",
+    "calendar": "Calendar",
+    "proposals": "Proposals",
+    "billing": "Usage & Billing",
+    "settings": "Settings"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "dawwen",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter \"./apps/*\" run dev",
+    "build": "pnpm -r --filter \"./apps/*\" run build",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r run test",
+    "test:e2e": "playwright test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "infra:up": "docker compose up -d --wait",
+    "infra:down": "docker compose down"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.20.0",
+    "@playwright/test": "^1.50.0",
+    "@types/node": "^22.13.0",
+    "eslint": "^9.20.0",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "globals": "^15.15.0",
+    "prettier": "^3.5.0",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.24.0",
+    "vitest": "^3.0.5"
+  }
+}

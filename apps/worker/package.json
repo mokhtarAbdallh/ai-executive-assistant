@@ -1,0 +1,22 @@
+{
+  "name": "@dawwen/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --conditions=source src/main.ts",
+    "build": "tsup",
+    "start": "node dist/main.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@dawwen/config": "workspace:*",
+    "@dawwen/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.6",
+    "tsx": "^4.19.2",
+    "vitest": "^3.0.5"
+  }
+}
