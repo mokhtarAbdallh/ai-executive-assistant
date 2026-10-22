@@ -13,6 +13,7 @@ import {
   MeetingRepository,
   TaskRepository,
   DecisionRepository,
+  CalendarConnectionRepository,
 } from "@dawwen/db";
 import { loggerOptions } from "./logger.js";
 import { healthRoutes } from "./routes/health.js";
@@ -20,12 +21,19 @@ import { authRoutes } from "./routes/auth.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { consentRoutes } from "./routes/consents.js";
 import { proposalRoutes } from "./routes/proposals.js";
+import { calendarRoutes } from "./routes/calendar.js";
 import { uploadRoutes } from "./routes/upload.js";
 import { meetingsRoutes } from "./routes/meetings.js";
 import { LocalAuthProvider } from "./auth/local.provider.js";
 import { CognitoAuthProvider } from "./auth/cognito.provider.js";
 import { createAuthMiddleware } from "./auth/middleware.js";
 import type { IAuthProvider } from "./auth/types.js";
+import { HkdfKeyProvider, TokenEncryptor } from "@dawwen/shared";
+import {
+  type CalendarProvider,
+  FakeCalendarProvider,
+} from "./services/calendar.js";
+import { ProposalExecutor } from "./services/proposal-executor.js";
 
 export interface AppOptions {
   corsOrigins: string[];
@@ -34,6 +42,7 @@ export interface AppOptions {
   authProvider?: IAuthProvider;
   localAuthProvider?: LocalAuthProvider;
   prisma?: PrismaClient;
+  calendarProvider?: CalendarProvider;
 }
 
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
@@ -83,6 +92,19 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const meetingRepository = new MeetingRepository(prisma);
   const taskRepository = new TaskRepository(prisma);
   const decisionRepository = new DecisionRepository(prisma);
+  const calendarConnectionRepository = new CalendarConnectionRepository(prisma);
+
+  const secret = opts.appSecret || process.env.APP_SECRET || "default-app-secret-at-least-32-characters-long!";
+  const keyProvider = new HkdfKeyProvider(secret);
+  const tokenEncryptor = new TokenEncryptor(keyProvider);
+
+  const calendarProvider = opts.calendarProvider || new FakeCalendarProvider();
+  const proposalExecutor = new ProposalExecutor(
+    proposalRepository,
+    calendarConnectionRepository,
+    calendarProvider,
+    tokenEncryptor,
+  );
 
   // Invariant 6: every route lives under /api (the ALB only forwards /api/* to this service).
   await app.register(
@@ -91,7 +113,13 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       await api.register(authRoutes, { localAuthProvider });
       await api.register(settingsRoutes, { settingsRepository });
       await api.register(consentRoutes, { consentRepository });
-      await api.register(proposalRoutes, { proposalRepository });
+      await api.register(proposalRoutes, { proposalRepository, proposalExecutor });
+      await api.register(calendarRoutes, {
+        calendarConnectionRepository,
+        calendarProvider,
+        tokenEncryptor,
+        prisma,
+      });
       await api.register(uploadRoutes, { meetingRepository, consentRepository, prisma });
       await api.register(meetingsRoutes, {
         meetingRepository,

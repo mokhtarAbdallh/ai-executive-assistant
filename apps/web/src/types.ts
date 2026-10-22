@@ -113,6 +113,28 @@ export interface Proposal {
   createdAt: string;
 }
 
+export interface CalendarEventItem {
+  id: string;
+  title: string;
+  start: string;
+  end: string;
+  description?: string;
+  location?: string;
+  attendees?: string[];
+  htmlLink?: string;
+  status: "scheduled" | "summarized" | "processing" | "needs_review";
+  meetingId?: string;
+  isAiBooked?: boolean;
+}
+
+export interface CalendarConnectionStatus {
+  connected: boolean;
+  provider: string;
+  calendarId?: string;
+  syncStatus?: string;
+  lastSyncedAt: string | null;
+}
+
 export interface EditHistory {
   id: string;
   meetingId: string;

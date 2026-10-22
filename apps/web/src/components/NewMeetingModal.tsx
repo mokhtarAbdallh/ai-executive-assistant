@@ -18,14 +18,26 @@ interface NewMeetingModalProps {
   isOpen: boolean;
   onClose: () => void;
   onMeetingCreated: (meeting: MeetingDetail) => void;
+  initialTitle?: string;
 }
 
-export function NewMeetingModal({ isOpen, onClose, onMeetingCreated }: NewMeetingModalProps) {
+export function NewMeetingModal({
+  isOpen,
+  onClose,
+  onMeetingCreated,
+  initialTitle,
+}: NewMeetingModalProps) {
   const { t } = useTranslation();
 
   const [mode, setMode] = useState<"demo" | "record" | "upload">("demo");
-  const [title, setTitle] = useState("");
+  const [title, setTitle] = useState(initialTitle || "");
   const [language, setLanguage] = useState<"ar" | "en" | "mixed">("mixed");
+
+  useEffect(() => {
+    if (initialTitle && isOpen) {
+      setTitle(initialTitle);
+    }
+  }, [initialTitle, isOpen]);
   const [consentConfirmed, setConsentConfirmed] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);

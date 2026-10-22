@@ -4,6 +4,8 @@ import { Navbar } from "./components/Navbar";
 import { MeetingsList } from "./components/MeetingsList";
 import { MeetingDetail } from "./components/MeetingDetail";
 import { NewMeetingModal } from "./components/NewMeetingModal";
+import { CalendarView } from "./components/CalendarView";
+import { ProposalsInbox } from "./components/ProposalsInbox";
 import {
   fetchHealth,
   fetchMeetings,
@@ -11,6 +13,7 @@ import {
   deleteMeeting,
   createMeeting,
   processDemoMeeting,
+  fetchProposals,
 } from "./api";
 import type { MeetingSummary, MeetingDetail as MeetingDetailType } from "./types";
 
@@ -18,8 +21,9 @@ export function App() {
   const { i18n } = useTranslation();
 
   // Navigation State
-  const [currentView, setCurrentView] = useState<"list" | "detail">("list");
+  const [currentView, setCurrentView] = useState<"list" | "detail" | "calendar" | "proposals">("list");
   const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
+  const [pendingProposalsCount, setPendingProposalsCount] = useState<number>(2);
 
   // Data State
   const [meetings, setMeetings] = useState<MeetingSummary[]>([]);
@@ -29,6 +33,7 @@ export function App() {
 
   // Modal State
   const [isNewMeetingOpen, setIsNewMeetingOpen] = useState(false);
+  const [initialMeetingTitle, setInitialMeetingTitle] = useState("");
 
   // Health State
   const [healthStatus, setHealthStatus] = useState<"connecting" | "connected" | "offline">(
@@ -136,13 +141,31 @@ export function App() {
     }
   };
 
+  // Load initial proposals count for badge
+  useEffect(() => {
+    void fetchProposals("PENDING_APPROVAL")
+      .then((props) => {
+        setPendingProposalsCount(props.length);
+      })
+      .catch(() => {});
+  }, []);
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100 font-sans selection:bg-cyan-500 selection:text-white antialiased">
       {/* Navigation Bar */}
       <Navbar
         healthStatus={healthStatus}
         uptime={uptime}
-        onNewMeetingClick={() => setIsNewMeetingOpen(true)}
+        currentView={currentView}
+        pendingProposalsCount={pendingProposalsCount}
+        onNavigate={(view) => {
+          setCurrentView(view);
+          if (view === "list") void loadMeetings();
+        }}
+        onNewMeetingClick={() => {
+          setInitialMeetingTitle("");
+          setIsNewMeetingOpen(true);
+        }}
         onHomeClick={() => {
           setCurrentView("list");
           setSelectedMeetingId(null);
@@ -167,6 +190,19 @@ export function App() {
               );
             }}
           />
+        ) : currentView === "calendar" ? (
+          <CalendarView
+            onStartRecordingForMeeting={(title) => {
+              setInitialMeetingTitle(title);
+              setIsNewMeetingOpen(true);
+            }}
+            onOpenMeetingDetail={handleSelectMeeting}
+          />
+        ) : currentView === "proposals" ? (
+          <ProposalsInbox
+            onProposalsCountChange={setPendingProposalsCount}
+            onNavigateToCalendar={() => setCurrentView("calendar")}
+          />
         ) : (
           <MeetingsList
             meetings={meetings}
@@ -174,7 +210,10 @@ export function App() {
             error={error}
             onSelectMeeting={handleSelectMeeting}
             onDeleteMeeting={handleDeleteMeeting}
-            onNewMeetingClick={() => setIsNewMeetingOpen(true)}
+            onNewMeetingClick={() => {
+              setInitialMeetingTitle("");
+              setIsNewMeetingOpen(true);
+            }}
             onLoadDemoClick={handleLoadDemoMeeting}
             onRetry={loadMeetings}
           />
@@ -184,7 +223,11 @@ export function App() {
       {/* New Meeting Modal */}
       <NewMeetingModal
         isOpen={isNewMeetingOpen}
-        onClose={() => setIsNewMeetingOpen(false)}
+        initialTitle={initialMeetingTitle}
+        onClose={() => {
+          setIsNewMeetingOpen(false);
+          setInitialMeetingTitle("");
+        }}
         onMeetingCreated={(createdMeeting) => {
           setActiveMeetingDetail(createdMeeting);
           setSelectedMeetingId(createdMeeting.id);
@@ -197,7 +240,7 @@ export function App() {
       <footer className="border-t border-slate-800/80 py-6 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div>
-            دوّن (Dawwen) — المساعد الذكي للاجتماعات • المرحلة الثالثة (Meetings UI & Review)
+            دوّن (Dawwen) — المساعد الذكي للاجتماعات • المرحلة الرابعة (Calendar & Proposals Inbox)
           </div>
           <div className="text-[11px] text-slate-500">
             RTL-First • Egyptian Arabic & English Code-Switching • Human-In-The-Loop

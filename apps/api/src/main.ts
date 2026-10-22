@@ -1,5 +1,6 @@
 import { ConfigError, loadApiConfig, loadDotEnvForDev, type ApiConfig } from "@dawwen/config";
 import { buildApp } from "./app.js";
+import { GoogleCalendarProvider } from "./services/calendar.js";
 
 function readConfig(): ApiConfig {
   loadDotEnvForDev();
@@ -16,9 +17,26 @@ function readConfig(): ApiConfig {
 
 async function main(): Promise<void> {
   const config = readConfig();
+  let calendarProvider;
+  if (config.googleOAuthJson) {
+    try {
+      const parsed = JSON.parse(config.googleOAuthJson) as { client_id?: string; client_secret?: string };
+      if (parsed.client_id && parsed.client_secret) {
+        calendarProvider = new GoogleCalendarProvider({
+          clientId: parsed.client_id,
+          clientSecret: parsed.client_secret,
+        });
+      }
+    } catch {
+      // Fallback to FakeCalendarProvider
+    }
+  }
+
   const app = await buildApp({
     corsOrigins: config.corsOrigins,
     logLevel: config.isProduction ? "info" : "debug",
+    appSecret: config.appSecret,
+    calendarProvider,
   });
 
   const shutdown = async (signal: string) => {

@@ -8,4 +8,5 @@ export * from "./repositories/proposal.repository.js";
 export * from "./repositories/credit.repository.js";
 export * from "./repositories/consent.repository.js";
 export * from "./repositories/settings.repository.js";
+export * from "./repositories/calendar-connection.repository.js";
 export * from "./seed.js";

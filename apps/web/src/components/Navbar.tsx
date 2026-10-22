@@ -6,6 +6,9 @@ import { Activity, ShieldCheck, Plus, CheckCircle2, AlertCircle } from "lucide-r
 interface NavbarProps {
   healthStatus: "connecting" | "connected" | "offline";
   uptime: number | null;
+  currentView: "list" | "detail" | "calendar" | "proposals";
+  pendingProposalsCount?: number;
+  onNavigate: (view: "list" | "calendar" | "proposals") => void;
   onNewMeetingClick: () => void;
   onHomeClick: () => void;
 }
@@ -13,6 +16,9 @@ interface NavbarProps {
 export function Navbar({
   healthStatus,
   uptime,
+  currentView,
+  pendingProposalsCount = 0,
+  onNavigate,
   onNewMeetingClick,
   onHomeClick,
 }: NavbarProps) {
@@ -22,7 +28,7 @@ export function Navbar({
   return (
     <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-40 transition-colors">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-        {/* Brand / Logo */}
+        {/* Brand / Logo + Navigation */}
         <div className="flex items-center gap-6">
           <button
             onClick={onHomeClick}
@@ -31,8 +37,47 @@ export function Navbar({
             <Wordmark className="h-9 transition group-hover:opacity-90" />
           </button>
 
+          {/* Navigation Links */}
+          <nav className="hidden md:flex items-center gap-1 p-1 rounded-xl bg-slate-950/60 border border-slate-800/80">
+            <button
+              onClick={() => onNavigate("list")}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                currentView === "list" || currentView === "detail"
+                  ? "bg-slate-800 text-cyan-400 shadow-sm"
+                  : "text-slate-400 hover:text-white hover:bg-slate-900"
+              }`}
+            >
+              {t("nav.meetings")}
+            </button>
+            <button
+              onClick={() => onNavigate("calendar")}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                currentView === "calendar"
+                  ? "bg-slate-800 text-cyan-400 shadow-sm"
+                  : "text-slate-400 hover:text-white hover:bg-slate-900"
+              }`}
+            >
+              {t("nav.calendar")}
+            </button>
+            <button
+              onClick={() => onNavigate("proposals")}
+              className={`relative px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+                currentView === "proposals"
+                  ? "bg-slate-800 text-cyan-400 shadow-sm"
+                  : "text-slate-400 hover:text-white hover:bg-slate-900"
+              }`}
+            >
+              <span>{t("nav.proposals")}</span>
+              {pendingProposalsCount > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-500 text-slate-950 animate-pulse">
+                  {pendingProposalsCount}
+                </span>
+              )}
+            </button>
+          </nav>
+
           {/* Hard Invariant 1 Banner Pill */}
-          <div className="hidden lg:flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border border-cyan-500/20 bg-cyan-950/30 text-cyan-300">
+          <div className="hidden xl:flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border border-cyan-500/20 bg-cyan-950/30 text-cyan-300">
             <ShieldCheck className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
             <span className="truncate max-w-xs">{t("app.humanInTheLoopNotice")}</span>
           </div>

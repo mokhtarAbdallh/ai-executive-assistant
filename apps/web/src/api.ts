@@ -1,4 +1,12 @@
-import type { MeetingSummary, MeetingDetail, Task, Decision } from "./types";
+import type {
+  MeetingSummary,
+  MeetingDetail,
+  Task,
+  Decision,
+  CalendarEventItem,
+  CalendarConnectionStatus,
+  Proposal,
+} from "./types";
 
 const TOKEN_KEY = "dawwen_access_token";
 
@@ -563,4 +571,262 @@ export async function requestUploadUrl(
     uploadUrl: "https://mock-s3.localstack.dev/upload",
     s3Key: `uploads/demo/${meetingId}/${data.fileName}`,
   };
+}
+
+/* ---------------- Calendar & Proposals (Phase 4) ---------------- */
+
+let DEMO_CALENDAR_CONNECTED = true;
+let DEMO_LAST_SYNCED = new Date().toISOString();
+
+const DEMO_PROPOSALS_STORE: Proposal[] = [
+  {
+    id: "prop-demo-01",
+    userId: "usr-demo",
+    meetingId: "demo-meet-01",
+    actionType: "SCHEDULE_MEETING",
+    payload: {
+      title: "اجتماع متابعة ومراجعة إطلاق الـ Production",
+      proposedDatetime: new Date(Date.now() + 86400000 * 3).toISOString(),
+      place: "Google Meet",
+      participants: ["ahmed@dawwen.ai", "sarah@dawwen.ai", "omar@dawwen.ai"],
+      durationMinutes: 45,
+    },
+    status: "PENDING_APPROVAL",
+    reason: "اقترح الذكاء الاصطناعي هذا الاجتماع بناءً على الاتفاق في نهاية سبرنت الـ Core Pipeline.",
+    createdAt: new Date(Date.now() - 3600000 * 2).toISOString(),
+  },
+  {
+    id: "prop-demo-02",
+    userId: "usr-demo",
+    meetingId: "demo-meet-01",
+    actionType: "SCHEDULE_MEETING",
+    payload: {
+      title: "جلسة مراجعة أداء الـ Bedrock والـ LocalStack مع فريق الديف أوبس",
+      proposedDatetime: new Date(Date.now() + 86400000 * 5).toISOString(),
+      place: "Google Meet",
+      participants: ["devops@dawwen.ai", "ahmed@dawwen.ai"],
+      durationMinutes: 30,
+    },
+    status: "PENDING_APPROVAL",
+    reason: "اتفق الحاضرون على تخصيص جلسة عمل فنية لتأكيد معايير الـ latency والـ IAM roles.",
+    createdAt: new Date(Date.now() - 3600000 * 5).toISOString(),
+  },
+  {
+    id: "prop-demo-03",
+    userId: "usr-demo",
+    meetingId: "demo-meet-01",
+    actionType: "SCHEDULE_MEETING",
+    payload: {
+      title: "اجتماع استعراض خطة الـ RTL مع فريق الـ UX",
+      proposedDatetime: new Date(Date.now() - 86400000).toISOString(),
+      place: "Google Meet",
+      participants: ["ux-lead@dawwen.ai"],
+      durationMinutes: 30,
+    },
+    status: "EXECUTED",
+    reason: "تم حجز الموعد مسبقاً بعد موافقة صريحة من المستخدم.",
+    createdAt: new Date(Date.now() - 86400000 * 2).toISOString(),
+  },
+];
+
+export async function fetchCalendarStatus(): Promise<CalendarConnectionStatus> {
+  try {
+    const res = await authFetch("/api/calendar/status");
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback
+  }
+  return {
+    connected: DEMO_CALENDAR_CONNECTED,
+    provider: "google",
+    calendarId: "primary",
+    syncStatus: DEMO_CALENDAR_CONNECTED ? "active" : "disconnected",
+    lastSyncedAt: DEMO_LAST_SYNCED,
+  };
+}
+
+export async function connectCalendar(code = "demo_code"): Promise<{ success: boolean; connected: boolean }> {
+  try {
+    const res = await authFetch("/api/calendar/callback", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    });
+    if (res.ok) {
+      DEMO_CALENDAR_CONNECTED = true;
+      DEMO_LAST_SYNCED = new Date().toISOString();
+      return res.json();
+    }
+  } catch {
+    // Fallback
+  }
+  DEMO_CALENDAR_CONNECTED = true;
+  DEMO_LAST_SYNCED = new Date().toISOString();
+  return { success: true, connected: true };
+}
+
+export async function disconnectCalendar(): Promise<void> {
+  try {
+    await authFetch("/api/calendar/disconnect", { method: "POST" });
+  } catch {
+    // Fallback
+  }
+  DEMO_CALENDAR_CONNECTED = false;
+}
+
+export async function syncCalendar(): Promise<{ success: boolean; lastSyncedAt: string }> {
+  try {
+    const res = await authFetch("/api/calendar/sync", { method: "POST" });
+    if (res.ok) {
+      const data = await res.json();
+      DEMO_LAST_SYNCED = data.lastSyncedAt;
+      return data;
+    }
+  } catch {
+    // Fallback
+  }
+  DEMO_LAST_SYNCED = new Date().toISOString();
+  return { success: true, lastSyncedAt: DEMO_LAST_SYNCED };
+}
+
+export async function fetchCalendarEvents(start?: string, end?: string): Promise<CalendarEventItem[]> {
+  try {
+    const query = new URLSearchParams();
+    if (start) query.set("start", start);
+    if (end) query.set("end", end);
+    const res = await authFetch(`/api/calendar/events?${query.toString()}`);
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback
+  }
+
+  // Demo fallback events
+  const now = new Date();
+  const d1 = new Date(now.getTime() + 1000 * 60 * 60 * 24);
+  d1.setHours(10, 0, 0, 0);
+  const d1End = new Date(d1.getTime() + 1000 * 60 * 45);
+
+  const d2 = new Date(now.getTime() + 1000 * 60 * 60 * 48);
+  d2.setHours(14, 30, 0, 0);
+  const d2End = new Date(d2.getTime() + 1000 * 60 * 60);
+
+  const d3 = new Date(now.getTime() + 1000 * 60 * 60 * 24 * 4);
+  d3.setHours(11, 0, 0, 0);
+  const d3End = new Date(d3.getTime() + 1000 * 60 * 30);
+
+  const events: CalendarEventItem[] = [
+    {
+      id: "evt-fake-1",
+      title: "مراجعة تصميم الواجهات وسير العمل (UI Sprint Planning)",
+      start: d1.toISOString(),
+      end: d1End.toISOString(),
+      location: "Google Meet",
+      attendees: ["ahmed@dawwen.ai", "sarah@dawwen.ai"],
+      status: "scheduled",
+      htmlLink: "https://calendar.google.com/event?eid=fake1",
+    },
+    {
+      id: "evt-fake-2",
+      title: "اجتماع توضيحي مع عميل منصة التجارة الإلكترونية",
+      start: d2.toISOString(),
+      end: d2End.toISOString(),
+      location: "Google Meet",
+      attendees: ["client@ecommerce-client.com", "mohamed@dawwen.ai"],
+      status: "scheduled",
+      htmlLink: "https://calendar.google.com/event?eid=fake2",
+    },
+    {
+      id: "evt-fake-3",
+      title: "متابعة أداء الـ Bedrock LLM والـ ElevenLabs ASR",
+      start: d3.toISOString(),
+      end: d3End.toISOString(),
+      location: "Zoom",
+      attendees: ["team-lead@dawwen.ai"],
+      status: "scheduled",
+      htmlLink: "https://calendar.google.com/event?eid=fake3",
+    },
+  ];
+
+  // Add meetings from DEMO_MEETINGS_STORE
+  DEMO_MEETINGS_STORE.forEach((m) => {
+    events.push({
+      id: `dawwen-m-${m.id}`,
+      meetingId: m.id,
+      title: m.title,
+      start: m.scheduledStart || m.createdAt,
+      end: new Date(new Date(m.scheduledStart || m.createdAt).getTime() + (m.audioDurationSeconds || 1800) * 1000).toISOString(),
+      description: m.analysis?.tldr,
+      status: m.tasks.some((t) => t.needsReview) ? "needs_review" : "summarized",
+      isAiBooked: false,
+    });
+  });
+
+  return events;
+}
+
+export async function fetchProposals(status?: string): Promise<Proposal[]> {
+  try {
+    const query = status ? `?status=${status}` : "";
+    const res = await authFetch(`/api/proposals${query}`);
+    if (res.ok) {
+      const data = await res.json();
+      return data.proposals || data;
+    }
+  } catch {
+    // Fallback
+  }
+
+  if (status) {
+    return DEMO_PROPOSALS_STORE.filter((p) => p.status === status);
+  }
+  return DEMO_PROPOSALS_STORE;
+}
+
+export async function approveProposal(
+  proposalId: string,
+  execute = true,
+): Promise<{ proposal: Proposal; status: string; details: Record<string, unknown> }> {
+  try {
+    const res = await authFetch(`/api/proposals/${proposalId}/approve?execute=${execute}`, {
+      method: "POST",
+    });
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback
+  }
+
+  const found = DEMO_PROPOSALS_STORE.find((p) => p.id === proposalId);
+  if (found) {
+    found.status = execute ? "EXECUTED" : "APPROVED";
+  }
+
+  return {
+    proposal: found || DEMO_PROPOSALS_STORE[0]!,
+    status: execute ? "EXECUTED" : "APPROVED",
+    details: {
+      eventId: `cal-evt-${Date.now()}`,
+      htmlLink: "https://calendar.google.com/calendar/r/eventedit",
+      bookedTime: found?.payload?.proposedDatetime || new Date().toISOString(),
+      title: found?.payload?.title || "اجتماع متابعة محجوز",
+    },
+  };
+}
+
+export async function rejectProposal(proposalId: string, reason?: string): Promise<Proposal> {
+  try {
+    const res = await authFetch(`/api/proposals/${proposalId}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+    if (res.ok) return res.json();
+  } catch {
+    // Fallback
+  }
+
+  const found = DEMO_PROPOSALS_STORE.find((p) => p.id === proposalId);
+  if (found) {
+    found.status = "REJECTED";
+    found.reason = reason || found.reason;
+    return found;
+  }
+  return DEMO_PROPOSALS_STORE[0]!;
 }
