@@ -108,7 +108,10 @@ export class SqsAudioConsumer {
     }
 
     if (!parsed) {
-      this.log.warn("unrecognized message format, deleting message", { body: message.Body });
+      this.log.warn("unrecognized message format, deleting message", {
+        messageId: message.MessageId,
+        bodyLength: message.Body?.length ?? 0,
+      });
       await this.deleteMessage(message.ReceiptHandle);
       return null;
     }
