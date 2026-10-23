@@ -10,6 +10,7 @@ export default tseslint.config(
       "**/dist/**",
       "**/build/**",
       "**/coverage/**",
+      "**/.vite/**",
       "playwright-report/**",
       "test-results/**",
       "infra/**",
