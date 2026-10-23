@@ -1,423 +1,462 @@
-import React, { useState, useEffect } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { ArrowDownRight, ArrowUpRight, Bot, Cpu, Mic, Plus, Receipt, Wallet } from "lucide-react";
 import {
   fetchBillingBalance,
   fetchBillingTransactions,
   fetchBillingUsage,
   topupCredits,
 } from "../api";
-import type {
-  BillingBalance,
-  CreditTransactionItem,
-  UsageSummary,
-  UsageEventItem,
-} from "../types";
+import type { BillingBalance, CreditTransactionItem, UsageEventItem, UsageSummary } from "../types";
+import { formatDateTime, formatNumber, formatUsd } from "../lib/format";
+import { cn } from "../lib/cn";
+import {
+  Badge,
+  Button,
+  Card,
+  CardBody,
+  CardHeader,
+  EmptyState,
+  Field,
+  Input,
+  Modal,
+  Segmented,
+  Skeleton,
+  Tabs,
+  useToast,
+  type BadgeTone,
+} from "./ui";
 
-export const BillingView: React.FC = () => {
-  const { t } = useTranslation();
+const TXN_TONE: Record<CreditTransactionItem["transactionType"], BadgeTone> = {
+  CREDIT_TOPUP: "success",
+  CREDIT_SETTLE: "neutral",
+  CREDIT_RESERVE: "warning",
+  CREDIT_REFUND: "info",
+};
+
+export function BillingView() {
+  const { t, i18n } = useTranslation();
+  const lang = i18n.language;
+  const { toast } = useToast();
 
   const [balance, setBalance] = useState<BillingBalance | null>(null);
   const [transactions, setTransactions] = useState<CreditTransactionItem[]>([]);
   const [usageSummary, setUsageSummary] = useState<UsageSummary | null>(null);
   const [usageEvents, setUsageEvents] = useState<UsageEventItem[]>([]);
-  const [activeTab, setActiveTab] = useState<"transactions" | "usage">("transactions");
+  const [tab, setTab] = useState<"transactions" | "usage">("transactions");
   const [loading, setLoading] = useState(true);
 
-  // Top-up modal state
-  const [isTopupOpen, setIsTopupOpen] = useState(false);
-  const [topupAmount, setTopupAmount] = useState<number>(10);
-  const [customAmount, setCustomAmount] = useState<string>("");
+  const [topupOpen, setTopupOpen] = useState(false);
+  const [preset, setPreset] = useState<string>("10");
+  const [customAmount, setCustomAmount] = useState("");
   const [reference, setReference] = useState("");
-  const [submittingTopup, setSubmittingTopup] = useState(false);
-  const [topupSuccess, setTopupSuccess] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  const loadData = async () => {
+  const load = useCallback(async () => {
+    setLoading(true);
     try {
-      setLoading(true);
-      const [bal, txs, use] = await Promise.all([
+      const [balanceData, transactionData, usageData] = await Promise.all([
         fetchBillingBalance(),
         fetchBillingTransactions(),
         fetchBillingUsage(),
       ]);
-      setBalance(bal);
-      setTransactions(txs.transactions);
-      setUsageSummary(use.summary);
-      setUsageEvents(use.events);
-    } catch (err) {
-      console.error("Failed to load billing data:", err);
+      setBalance(balanceData);
+      setTransactions(transactionData.transactions);
+      setUsageSummary(usageData.summary);
+      setUsageEvents(usageData.events);
+    } catch {
+      toast({ title: t("errors.generic"), tone: "error" });
     } finally {
       setLoading(false);
     }
-  };
+  }, [t, toast]);
 
   useEffect(() => {
-    void loadData();
-  }, []);
+    void load();
+  }, [load]);
 
-  const handleTopupSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const finalAmount = customAmount ? parseFloat(customAmount) : topupAmount;
-    if (isNaN(finalAmount) || finalAmount <= 0) return;
+  const availableDollars = balance ? Number(balance.availableMicros) / 1_000_000 : 0;
+  const reservedDollars = balance ? Number(balance.reservedMicros) / 1_000_000 : 0;
 
+  const submitTopup = async () => {
+    const amount = customAmount ? Number.parseFloat(customAmount) : Number.parseFloat(preset);
+    if (!Number.isFinite(amount) || amount <= 0) return;
+
+    setSubmitting(true);
     try {
-      setSubmittingTopup(true);
-      const res = await topupCredits({
-        amountDollars: finalAmount,
+      const result = await topupCredits({
+        amountDollars: amount,
         reference: reference.trim() || undefined,
-        description: `Top-up via manual payment ($${finalAmount})`,
+        description: `Top-up via manual payment (${formatUsd(amount, "en")})`,
       });
-
-      if (res.success) {
-        setTopupSuccess(`تم شحن رصيدك بنجاح بمبلغ $${finalAmount}!`);
-        setTimeout(() => {
-          setIsTopupOpen(false);
-          setTopupSuccess(null);
-          setReference("");
-          setCustomAmount("");
-        }, 1500);
-        await loadData();
+      if (result.success) {
+        toast({
+          title: t("billing.topupSuccess", { amount: formatUsd(amount, lang) }),
+          tone: "success",
+        });
+        setTopupOpen(false);
+        setReference("");
+        setCustomAmount("");
+        await load();
       }
-    } catch (err) {
-      console.error("Top-up failed:", err);
+    } catch {
+      toast({ title: t("errors.generic"), tone: "error" });
     } finally {
-      setSubmittingTopup(false);
-    }
-  };
-
-  const getTransactionTypeBadge = (type: string) => {
-    switch (type) {
-      case "CREDIT_TOPUP":
-        return <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">+{t("billing.typeTopup")}</span>;
-      case "CREDIT_SETTLE":
-        return <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-blue-100 text-blue-800 dark:bg-blue-950/60 dark:text-blue-300">{t("billing.typeSettle")}</span>;
-      case "CREDIT_RESERVE":
-        return <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">{t("billing.typeReserve")}</span>;
-      case "CREDIT_REFUND":
-        return <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-purple-100 text-purple-800 dark:bg-purple-950/60 dark:text-purple-300">{t("billing.typeRefund")}</span>;
-      default:
-        return <span className="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-800">{type}</span>;
+      setSubmitting(false);
     }
   };
 
   return (
-    <div className="space-y-8 animate-fadeIn max-w-6xl mx-auto">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl md:text-3xl font-extrabold text-gray-900 dark:text-white flex items-center gap-3">
-            <span className="p-2 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-              💳
-            </span>
-            {t("billing.title")}
-          </h1>
-          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-            {t("billing.subtitle")}
-          </p>
-        </div>
+    <div className="space-y-5">
+      <header>
+        <h1 className="text-xl font-semibold sm:text-2xl">{t("billing.title")}</h1>
+        <p className="mt-1 max-w-xl text-xs leading-relaxed text-fg-muted sm:text-sm">
+          {t("billing.subtitle")}
+        </p>
+      </header>
 
-        <button
-          onClick={() => setIsTopupOpen(true)}
-          className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-bold text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-md shadow-emerald-500/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
-        >
-          <span className="text-lg">⚡</span>
-          {t("billing.topupBtn")}
-        </button>
-      </div>
-
-      {/* Balance & Stat Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        {/* Main Balance Card */}
-        <div className="md:col-span-2 relative overflow-hidden rounded-2xl bg-gradient-to-br from-gray-900 via-slate-900 to-slate-800 text-white p-6 shadow-xl border border-slate-700/50">
-          <div className="absolute top-0 end-0 -mt-8 -me-8 w-40 h-40 bg-emerald-500/20 rounded-full blur-3xl pointer-events-none" />
-          <div className="relative z-10 flex flex-col justify-between h-full">
-            <div>
-              <div className="flex items-center justify-between text-slate-400 text-xs font-semibold uppercase tracking-wider mb-2">
-                <span>{t("billing.currentBalance")}</span>
-                <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[11px] font-bold">
-                  PAY-AS-YOU-GO
-                </span>
-              </div>
-              <div className="text-4xl md:text-5xl font-black text-white tracking-tight">
-                {balance ? balance.formattedBalance : "$0.00"}
-              </div>
+      <div className="grid gap-3 lg:grid-cols-3">
+        <Card className="relative overflow-hidden bg-gradient-to-br from-brand/10 via-surface to-surface lg:col-span-1">
+          <div className="pointer-events-none absolute -end-10 -top-10 h-40 w-40 rounded-full bg-brand/10 blur-2xl" />
+          <CardBody className="relative space-y-4">
+            <div className="flex items-center justify-between gap-2">
+              <p className="flex items-center gap-1.5 text-xs font-medium text-fg-muted">
+                <Wallet aria-hidden className="h-3.5 w-3.5" />
+                {t("billing.currentBalance")}
+              </p>
+              <Badge tone="brand">{t("billing.payAsYouGo")}</Badge>
             </div>
 
-            <div className="mt-6 pt-4 border-t border-slate-700/60 grid grid-cols-2 gap-4 text-xs">
+            <p className="text-3xl font-semibold tabular text-fg">
+              {balance ? formatUsd(availableDollars, lang) : "—"}
+            </p>
+
+            <dl className="grid grid-cols-2 gap-3 border-t border-line pt-3 text-xs">
               <div>
-                <span className="text-slate-400 block mb-0.5">{t("billing.available")}</span>
-                <span className="font-bold text-emerald-400 text-sm">
-                  {balance ? `$${(Number(balance.availableMicros) / 1_000_000).toFixed(2)}` : "$0.00"}
-                </span>
+                <dt className="text-fg-subtle">{t("billing.available")}</dt>
+                <dd className="mt-0.5 font-medium tabular text-success">
+                  {formatUsd(availableDollars, lang)}
+                </dd>
               </div>
               <div>
-                <span className="text-slate-400 block mb-0.5">{t("billing.reserved")}</span>
-                <span className="font-bold text-amber-400 text-sm">
-                  {balance ? `$${(Number(balance.reservedMicros) / 1_000_000).toFixed(2)}` : "$0.00"}
-                </span>
+                <dt className="text-fg-subtle">{t("billing.reserved")}</dt>
+                <dd className="mt-0.5 font-medium tabular text-warning">
+                  {formatUsd(reservedDollars, lang)}
+                </dd>
               </div>
-            </div>
-          </div>
-        </div>
+            </dl>
 
-        {/* Minutes Card */}
-        <div className="rounded-2xl bg-white dark:bg-slate-800 p-5 shadow-sm border border-gray-100 dark:border-slate-700/60 flex flex-col justify-between">
-          <div>
-            <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 flex items-center justify-center text-lg mb-3">
-              🎙️
-            </div>
-            <span className="text-xs text-gray-500 dark:text-gray-400 font-medium block mb-1">
-              {t("billing.audioMinutes")}
-            </span>
-            <div className="text-2xl font-bold text-gray-900 dark:text-white">
-              {usageSummary ? `${usageSummary.totalAudioMinutes} min` : "0 min"}
-            </div>
-          </div>
-          <div className="mt-4 text-[11px] text-gray-400 dark:text-gray-500">
-            ~ $0.02 / audio minute
-          </div>
-        </div>
-
-        {/* Tokens & Cost Card */}
-        <div className="rounded-2xl bg-white dark:bg-slate-800 p-5 shadow-sm border border-gray-100 dark:border-slate-700/60 flex flex-col justify-between">
-          <div>
-            <div className="w-10 h-10 rounded-xl bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 flex items-center justify-center text-lg mb-3">
-              🤖
-            </div>
-            <span className="text-xs text-gray-500 dark:text-gray-400 font-medium block mb-1">
-              {t("billing.llmTokens")}
-            </span>
-            <div className="text-2xl font-bold text-gray-900 dark:text-white">
-              {usageSummary ? usageSummary.totalLlmTokens.toLocaleString() : "0"}
-            </div>
-          </div>
-          <div className="mt-4 text-[11px] text-gray-400 dark:text-gray-500">
-            {t("billing.totalCost")}: <span className="font-semibold text-purple-600 dark:text-purple-400">${usageSummary ? usageSummary.totalCostDollars.toFixed(2) : "0.00"}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-gray-100 dark:border-slate-700/60 overflow-hidden">
-        <div className="flex border-b border-gray-100 dark:border-slate-700/60 px-6 pt-4 gap-6">
-          <button
-            onClick={() => setActiveTab("transactions")}
-            className={`pb-4 text-sm font-bold border-b-2 transition-colors ${
-              activeTab === "transactions"
-                ? "border-emerald-600 text-emerald-600 dark:text-emerald-400"
-                : "border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400"
-            }`}
-          >
-            {t("billing.tabTransactions")} ({transactions.length})
-          </button>
-          <button
-            onClick={() => setActiveTab("usage")}
-            className={`pb-4 text-sm font-bold border-b-2 transition-colors ${
-              activeTab === "usage"
-                ? "border-emerald-600 text-emerald-600 dark:text-emerald-400"
-                : "border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400"
-            }`}
-          >
-            {t("billing.tabUsage")} ({usageEvents.length})
-          </button>
-        </div>
-
-        {/* Content */}
-        <div className="p-6">
-          {loading ? (
-            <div className="py-12 text-center text-gray-400">
-              <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-emerald-500 border-t-transparent mb-2" />
-              <p className="text-sm">جاري تحميل البيانات...</p>
-            </div>
-          ) : activeTab === "transactions" ? (
-            /* Transactions Table */
-            transactions.length === 0 ? (
-              <div className="py-12 text-center text-gray-400">
-                <span className="text-3xl block mb-2">📜</span>
-                <p>لا توجد أي معاملات سابقة في حسابك.</p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-start text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-100 dark:border-slate-700/60 text-gray-400 text-xs font-semibold">
-                      <th className="pb-3 text-start">{t("billing.tableDate")}</th>
-                      <th className="pb-3 text-start">{t("billing.tableType")}</th>
-                      <th className="pb-3 text-start">{t("billing.tableAmount")}</th>
-                      <th className="pb-3 text-start">{t("billing.tableDesc")}</th>
-                      <th className="pb-3 text-start">{t("billing.tableRef")}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100 dark:divide-slate-700/40">
-                    {transactions.map((tx) => (
-                      <tr key={tx.id} className="hover:bg-gray-50/50 dark:hover:bg-slate-700/20 transition-colors">
-                        <td className="py-3.5 text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                          {new Date(tx.createdAt).toLocaleDateString()} {new Date(tx.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                        </td>
-                        <td className="py-3.5 whitespace-nowrap">
-                          {getTransactionTypeBadge(tx.transactionType)}
-                        </td>
-                        <td className={`py-3.5 font-bold whitespace-nowrap ${tx.amountDollars >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-gray-900 dark:text-white"}`}>
-                          {tx.amountDollars >= 0 ? `+$${tx.amountDollars.toFixed(2)}` : `-$${Math.abs(tx.amountDollars).toFixed(2)}`}
-                        </td>
-                        <td className="py-3.5 text-gray-700 dark:text-gray-300 max-w-xs truncate" title={tx.description}>
-                          {tx.description}
-                        </td>
-                        <td className="py-3.5 text-xs text-gray-400 font-mono">
-                          {tx.referenceId || "—"}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )
-          ) : (
-            /* Usage Events Table */
-            usageEvents.length === 0 ? (
-              <div className="py-12 text-center text-gray-400">
-                <span className="text-3xl block mb-2">📊</span>
-                <p>لم يتم تسجيل أي عمليات استهلاك بعد.</p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-start text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-100 dark:border-slate-700/60 text-gray-400 text-xs font-semibold">
-                      <th className="pb-3 text-start">{t("billing.tableDate")}</th>
-                      <th className="pb-3 text-start">{t("billing.tableMeeting")}</th>
-                      <th className="pb-3 text-start">{t("billing.tableType")}</th>
-                      <th className="pb-3 text-start">{t("billing.tableQuantity")}</th>
-                      <th className="pb-3 text-start">{t("billing.tableAmount")}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100 dark:divide-slate-700/40">
-                    {usageEvents.map((ev) => (
-                      <tr key={ev.id} className="hover:bg-gray-50/50 dark:hover:bg-slate-700/20 transition-colors">
-                        <td className="py-3.5 text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                          {new Date(ev.createdAt).toLocaleDateString()} {new Date(ev.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                        </td>
-                        <td className="py-3.5 font-medium text-gray-800 dark:text-gray-200">
-                          {ev.meeting?.title || "اجتماع مسجل"}
-                        </td>
-                        <td className="py-3.5 text-xs text-gray-600 dark:text-gray-300 font-mono">
-                          {ev.operationType}
-                        </td>
-                        <td className="py-3.5 text-xs text-gray-500 dark:text-gray-400">
-                          {ev.quantity} {ev.unit}
-                        </td>
-                        <td className="py-3.5 font-bold text-gray-900 dark:text-white whitespace-nowrap">
-                          ${ev.costDollars.toFixed(3)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )
-          )}
-        </div>
-      </div>
-
-      {/* Top-up Modal */}
-      {isTopupOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white dark:bg-slate-800 rounded-3xl p-6 md:p-8 max-w-md w-full shadow-2xl border border-gray-100 dark:border-slate-700 relative animate-scaleUp">
-            <button
-              onClick={() => setIsTopupOpen(false)}
-              className="absolute top-5 end-5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-xl"
+            <Button
+              variant="primary"
+              className="w-full"
+              icon={<Plus className="h-4 w-4" />}
+              onClick={() => setTopupOpen(true)}
             >
-              ✕
-            </button>
+              {t("billing.topupBtn")}
+            </Button>
+          </CardBody>
+        </Card>
 
-            <div className="text-center mb-6">
-              <div className="w-14 h-14 rounded-2xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 mx-auto flex items-center justify-center text-2xl mb-3 shadow-inner">
-                ⚡
-              </div>
-              <h3 className="text-xl font-black text-gray-900 dark:text-white">
-                {t("billing.topupModalTitle")}
-              </h3>
-              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                {t("billing.topupModalDesc")}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:col-span-2">
+          <StatCard
+            icon={<Mic />}
+            label={t("billing.audioMinutes")}
+            value={
+              loading
+                ? null
+                : formatNumber(usageSummary?.totalAudioMinutes ?? 0, lang, {
+                    maximumFractionDigits: 1,
+                  })
+            }
+            hint={t("billing.audioMinutesHint")}
+            tone="text-info bg-info/10"
+          />
+          <StatCard
+            icon={<Bot />}
+            label={t("billing.llmTokens")}
+            value={loading ? null : formatNumber(usageSummary?.totalLlmTokens ?? 0, lang)}
+            hint={t("billing.llmTokensHint")}
+            tone="text-brand bg-brand/10"
+          />
+          <StatCard
+            icon={<Cpu />}
+            label={t("billing.totalCost")}
+            value={loading ? null : formatUsd(usageSummary?.totalCostDollars ?? 0, lang)}
+            hint={t("billing.totalCostHint", { count: usageSummary?.totalEvents ?? 0 })}
+            tone="text-success bg-success/10"
+          />
+        </div>
+      </div>
+
+      <Card className="overflow-hidden">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line p-3">
+          <Tabs
+            ariaLabel={t("billing.tabsLabel")}
+            value={tab}
+            onChange={(next) => setTab(next as "transactions" | "usage")}
+            tabs={[
+              {
+                id: "transactions",
+                label: t("billing.tabTransactions"),
+                count: transactions.length,
+                icon: <Receipt />,
+              },
+              {
+                id: "usage",
+                label: t("billing.tabUsage"),
+                count: usageEvents.length,
+                icon: <Cpu />,
+              },
+            ]}
+            className="border-0 bg-transparent p-0"
+          />
+        </div>
+
+        {loading ? (
+          <div className="space-y-2 p-4">
+            {[0, 1, 2, 3].map((row) => (
+              <Skeleton key={row} className="h-10" />
+            ))}
+          </div>
+        ) : tab === "transactions" ? (
+          transactions.length === 0 ? (
+            <EmptyState
+              icon={<Receipt />}
+              title={t("billing.emptyTransactionsTitle")}
+              description={t("billing.emptyTransactionsBody")}
+              className="m-4 border-0 bg-transparent"
+            />
+          ) : (
+            <Table
+              head={[
+                t("billing.colDate"),
+                t("billing.colType"),
+                t("billing.colDescription"),
+                t("billing.colAmount"),
+              ]}
+            >
+              {transactions.map((transaction) => {
+                const positive = transaction.amountDollars >= 0;
+                return (
+                  <tr key={transaction.id} className="border-b border-line last:border-0">
+                    <td className="whitespace-nowrap px-4 py-3 text-xs tabular text-fg-muted">
+                      {formatDateTime(transaction.createdAt, lang)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <Badge tone={TXN_TONE[transaction.transactionType]}>
+                        {t(`billing.txnType.${transaction.transactionType}`)}
+                      </Badge>
+                    </td>
+                    <td className="max-w-[280px] px-4 py-3 text-xs text-fg-muted" dir="auto">
+                      {transaction.description}
+                    </td>
+                    <td
+                      className={cn(
+                        "whitespace-nowrap px-4 py-3 text-end text-xs font-medium tabular",
+                        positive ? "text-success" : "text-fg",
+                      )}
+                    >
+                      <span className="inline-flex items-center gap-1">
+                        {positive ? (
+                          <ArrowUpRight aria-hidden className="h-3 w-3" />
+                        ) : (
+                          <ArrowDownRight aria-hidden className="h-3 w-3" />
+                        )}
+                        {positive ? "+" : "−"}
+                        {formatUsd(Math.abs(transaction.amountDollars), lang)}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </Table>
+          )
+        ) : usageEvents.length === 0 ? (
+          <EmptyState
+            icon={<Cpu />}
+            title={t("billing.emptyUsageTitle")}
+            description={t("billing.emptyUsageBody")}
+            className="m-4 border-0 bg-transparent"
+          />
+        ) : (
+          <Table
+            head={[
+              t("billing.colDate"),
+              t("billing.colOperation"),
+              t("billing.colMeeting"),
+              t("billing.colQuantity"),
+              t("billing.colCost"),
+            ]}
+          >
+            {usageEvents.map((event) => (
+              <tr key={event.id} className="border-b border-line last:border-0">
+                <td className="whitespace-nowrap px-4 py-3 text-xs tabular text-fg-muted">
+                  {formatDateTime(event.createdAt, lang)}
+                </td>
+                <td className="px-4 py-3 text-xs text-fg">
+                  {t(`billing.operation.${event.operationType}`, {
+                    defaultValue: event.operationType,
+                  })}
+                </td>
+                <td className="max-w-[220px] truncate px-4 py-3 text-xs text-fg-muted" dir="auto">
+                  {event.meeting?.title ?? "—"}
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 text-xs tabular text-fg-muted">
+                  {formatNumber(event.quantity, lang, { maximumFractionDigits: 1 })}{" "}
+                  {t(`billing.unit.${event.unit}`, { defaultValue: event.unit })}
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 text-end text-xs font-medium tabular text-fg">
+                  {formatUsd(event.costDollars, lang)}
+                </td>
+              </tr>
+            ))}
+          </Table>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader icon={<Wallet className="h-4 w-4" />} title={t("billing.howTitle")} />
+        <CardBody className="grid gap-3 sm:grid-cols-3">
+          {[1, 2, 3].map((step) => (
+            <div key={step} className="rounded-xl border border-line bg-raised/30 p-3">
+              <p className="text-xs font-semibold text-brand">{t(`billing.howStep${step}Title`)}</p>
+              <p className="mt-1 text-xs leading-relaxed text-fg-muted">
+                {t(`billing.howStep${step}Body`)}
               </p>
             </div>
+          ))}
+        </CardBody>
+      </Card>
 
-            {topupSuccess ? (
-              <div className="py-8 text-center text-emerald-600 dark:text-emerald-400 font-bold space-y-2">
-                <span className="text-4xl block">🎉</span>
-                <p>{topupSuccess}</p>
-              </div>
-            ) : (
-              <form onSubmit={handleTopupSubmit} className="space-y-5">
-                {/* Preset Options */}
-                <div className="grid grid-cols-2 gap-3">
-                  {[5, 10, 25, 50].map((amt) => (
-                    <button
-                      key={amt}
-                      type="button"
-                      onClick={() => {
-                        setTopupAmount(amt);
-                        setCustomAmount("");
-                      }}
-                      className={`p-3 rounded-xl border text-center transition-all ${
-                        topupAmount === amt && !customAmount
-                          ? "border-emerald-500 bg-emerald-50/50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 font-bold shadow-sm"
-                          : "border-gray-200 dark:border-slate-700 text-gray-700 dark:text-gray-300 hover:border-gray-300"
-                      }`}
-                    >
-                      <div className="text-lg font-black">${amt}</div>
-                      <div className="text-[10px] text-gray-400">
-                        {amt === 5 ? "~250 دقيقة" : amt === 10 ? "~500 دقيقة" : amt === 25 ? "~1250 دقيقة" : "~2500 دقيقة"}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-
-                {/* Custom Amount */}
-                <div>
-                  <label className="block text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1">
-                    {t("billing.customAmount")}
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    step="0.5"
-                    value={customAmount}
-                    onChange={(e) => setCustomAmount(e.target.value)}
-                    placeholder="مثال: 15"
-                    className="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-900 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  />
-                </div>
-
-                {/* Manual Reference */}
-                <div>
-                  <label className="block text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1">
-                    {t("billing.paymentRef")}
-                  </label>
-                  <input
-                    type="text"
-                    value={reference}
-                    onChange={(e) => setReference(e.target.value)}
-                    placeholder="رقم عملية إنستاباي أو إشعار التحويل البنكي"
-                    className="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-900 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  />
-                  <span className="text-[11px] text-gray-400 mt-1 block">
-                    {t("billing.paymentMethod")}
-                  </span>
-                </div>
-
-                {/* Submit */}
-                <button
-                  type="submit"
-                  disabled={submittingTopup}
-                  className="w-full py-3 rounded-xl font-bold text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-md shadow-emerald-500/20 transition-all hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50"
-                >
-                  {submittingTopup ? "جاري الإيداع..." : t("billing.confirmTopup")}
-                </button>
-              </form>
-            )}
+      <Modal
+        open={topupOpen}
+        onClose={() => setTopupOpen(false)}
+        title={t("billing.topupTitle")}
+        description={t("billing.topupBody")}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setTopupOpen(false)} disabled={submitting}>
+              {t("common.cancel")}
+            </Button>
+            <Button variant="primary" loading={submitting} onClick={submitTopup}>
+              {t("billing.confirmTopup")}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-fg-muted">{t("billing.amount")}</p>
+            <Segmented
+              ariaLabel={t("billing.amount")}
+              value={preset}
+              onChange={(next) => {
+                setPreset(next);
+                setCustomAmount("");
+              }}
+              options={[
+                { value: "5", label: formatUsd(5, lang) },
+                { value: "10", label: formatUsd(10, lang) },
+                { value: "25", label: formatUsd(25, lang) },
+                { value: "50", label: formatUsd(50, lang) },
+              ]}
+            />
           </div>
+
+          <Field
+            label={t("billing.customAmount")}
+            htmlFor="custom-amount"
+            hint={t("billing.customAmountHint")}
+          >
+            <Input
+              id="custom-amount"
+              type="number"
+              min={1}
+              step="0.5"
+              inputMode="decimal"
+              value={customAmount}
+              onChange={(event) => setCustomAmount(event.target.value)}
+              placeholder="15"
+              className="tabular"
+            />
+          </Field>
+
+          <Field
+            label={t("billing.reference")}
+            htmlFor="reference"
+            hint={t("billing.referenceHint")}
+          >
+            <Input
+              id="reference"
+              value={reference}
+              onChange={(event) => setReference(event.target.value)}
+              placeholder={t("billing.referencePlaceholder")}
+              dir="auto"
+            />
+          </Field>
+
+          <p className="rounded-xl border border-line bg-raised/40 p-3 text-xs leading-relaxed text-fg-muted">
+            {t("billing.manualNote")}
+          </p>
         </div>
-      )}
+      </Modal>
     </div>
   );
-};
+}
+
+function StatCard({
+  icon,
+  label,
+  value,
+  hint,
+  tone,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: string | null;
+  hint: string;
+  tone: string;
+}) {
+  return (
+    <Card className="p-4">
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-xs font-medium text-fg-muted">{label}</p>
+        <span
+          aria-hidden
+          className={cn("grid h-7 w-7 place-items-center rounded-lg [&>svg]:h-4 [&>svg]:w-4", tone)}
+        >
+          {icon}
+        </span>
+      </div>
+      {value === null ? (
+        <Skeleton className="mt-2 h-7 w-20" />
+      ) : (
+        <p className="mt-2 text-2xl font-semibold tabular text-fg">{value}</p>
+      )}
+      <p className="mt-1 text-[11px] leading-relaxed text-fg-subtle">{hint}</p>
+    </Card>
+  );
+}
+
+function Table({ head, children }: { head: string[]; children: ReactNode }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[560px] border-collapse text-start">
+        <thead>
+          <tr className="border-b border-line bg-raised/40">
+            {head.map((cell) => (
+              <th
+                key={cell}
+                scope="col"
+                className="px-4 py-2.5 text-start text-[11px] font-medium uppercase tracking-wide text-fg-subtle"
+              >
+                {cell}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>{children}</tbody>
+      </table>
+    </div>
+  );
+}

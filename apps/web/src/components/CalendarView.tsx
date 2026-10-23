@@ -1,33 +1,58 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
 import timeGridPlugin from "@fullcalendar/timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
-import type { EventClickArg } from "@fullcalendar/core";
+import arLocale from "@fullcalendar/core/locales/ar";
+import type { DatesSetArg, EventClickArg, EventContentArg } from "@fullcalendar/core";
 import {
-  Calendar as CalendarIcon,
-  List as ListIcon,
-  RefreshCw,
-  Sparkles,
-  MapPin,
-  Users,
-  Clock,
-  Mic,
+  CalendarDays,
+  CalendarPlus,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
   ExternalLink,
-  X,
-  FileText,
-  CalendarCheck2,
-  Loader2,
+  Link2,
+  MapPin,
+  Mic,
+  RefreshCw,
+  Rows3,
+  Unlink,
+  Users,
 } from "lucide-react";
-import type { CalendarEventItem, CalendarConnectionStatus } from "../types";
+import type { CalendarConnectionStatus, CalendarEventItem } from "../types";
 import {
-  fetchCalendarEvents,
-  fetchCalendarStatus,
   connectCalendar,
   disconnectCalendar,
+  fetchCalendarEvents,
+  fetchCalendarStatus,
   syncCalendar,
 } from "../api";
+import { formatDate, formatDateTime, formatMonthYear, formatTime } from "../lib/format";
+import { cn } from "../lib/cn";
+import { CalendarStatusBadge } from "./CalendarStatusBadge";
+import {
+  Button,
+  Card,
+  ConfirmDialog,
+  EmptyState,
+  IconButton,
+  Input,
+  Modal,
+  Segmented,
+  Skeleton,
+  useToast,
+} from "./ui";
+
+type CalView = "month" | "week" | "list";
+
+const EVENT_TIME_FORMAT = {
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: true,
+  meridiem: "short",
+} as const;
 
 interface CalendarViewProps {
   onStartRecordingForMeeting: (title: string) => void;
@@ -39,595 +64,489 @@ export function CalendarView({
   onOpenMeetingDetail,
 }: CalendarViewProps) {
   const { t, i18n } = useTranslation();
-  const isRtl = i18n.language === "ar";
-  const calendarRef = useRef<FullCalendar | null>(null);
+  const lang = i18n.language;
+  const { toast } = useToast();
 
-  const [activeTab, setActiveTab] = useState<"calendar" | "list">("calendar");
-  const [listSubTab, setListSubTab] = useState<"upcoming" | "past">("upcoming");
+  const calendarRef = useRef<FullCalendar>(null);
+  const [view, setView] = useState<CalView>(() =>
+    typeof window !== "undefined" && window.matchMedia("(max-width: 640px)").matches
+      ? "list"
+      : "month",
+  );
   const [events, setEvents] = useState<CalendarEventItem[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [connStatus, setConnStatus] = useState<CalendarConnectionStatus>({
-    connected: true,
-    provider: "google",
-    lastSyncedAt: new Date().toISOString(),
-  });
+  const [status, setStatus] = useState<CalendarConnectionStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [disconnectOpen, setDisconnectOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<CalendarEventItem | null>(null);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [monthDate, setMonthDate] = useState(() => new Date());
+  const [search, setSearch] = useState("");
 
-  const loadData = useCallback(async () => {
-    setIsLoading(true);
+  const load = useCallback(async () => {
+    setLoading(true);
     try {
-      const [evts, status] = await Promise.all([
+      const [eventList, connection] = await Promise.all([
         fetchCalendarEvents(),
         fetchCalendarStatus(),
       ]);
-      setEvents(evts);
-      setConnStatus(status);
-    } catch (err: unknown) {
-      console.error("Failed to load calendar data", err);
+      setEvents(eventList);
+      setStatus(connection);
+    } catch {
+      toast({ title: t("calendar.loadFailed"), tone: "error" });
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
-  }, []);
+  }, [t, toast]);
 
   useEffect(() => {
-    void loadData();
-  }, [loadData]);
+    void load();
+  }, [load]);
 
-  const handleSyncNow = async () => {
-    setIsSyncing(true);
+  useEffect(() => {
+    const api = calendarRef.current?.getApi();
+    if (!api || view === "list") return;
+    const nextView = view === "month" ? "dayGridMonth" : "timeGridWeek";
+    if (api.view.type !== nextView) api.changeView(nextView);
+  }, [view]);
+
+  const handleSync = async () => {
+    setSyncing(true);
     try {
-      const res = await syncCalendar();
-      setConnStatus((prev) => ({ ...prev, lastSyncedAt: res.lastSyncedAt }));
-      const evts = await fetchCalendarEvents();
-      setEvents(evts);
-    } catch (err: unknown) {
-      alert("فشل مزامنة التقويم: " + (err instanceof Error ? err.message : String(err)));
+      const result = await syncCalendar();
+      setEvents(await fetchCalendarEvents());
+      setStatus((current) =>
+        current ? { ...current, lastSyncedAt: result.lastSyncedAt, connected: true } : current,
+      );
+      toast({ title: t("calendar.synced"), tone: "success" });
+    } catch {
+      toast({ title: t("calendar.syncFailed"), tone: "error" });
     } finally {
-      setIsSyncing(false);
+      setSyncing(false);
     }
   };
 
-  const handleToggleConnect = async () => {
-    if (connStatus.connected) {
-      if (confirm("هل تريد إلغاء ربط حساب Google Calendar؟")) {
-        await disconnectCalendar();
-        setConnStatus((prev) => ({ ...prev, connected: false, lastSyncedAt: null }));
-      }
-    } else {
+  const handleConnect = async () => {
+    setConnecting(true);
+    try {
       await connectCalendar();
-      setConnStatus({
-        connected: true,
-        provider: "google",
-        calendarId: "primary",
-        syncStatus: "active",
-        lastSyncedAt: new Date().toISOString(),
-      });
-      void loadData();
+      setStatus(await fetchCalendarStatus());
+      setEvents(await fetchCalendarEvents());
+      toast({ title: t("calendar.connected"), tone: "success" });
+    } catch {
+      toast({ title: t("errors.generic"), tone: "error" });
+    } finally {
+      setConnecting(false);
     }
   };
 
-  const handleEventClick = (info: EventClickArg) => {
-    const found = events.find((e) => e.id === info.event.id);
-    if (found) {
-      setSelectedEvent(found);
-    } else {
-      setSelectedEvent({
-        id: info.event.id,
-        title: info.event.title,
-        start: info.event.start?.toISOString() || new Date().toISOString(),
-        end: info.event.end?.toISOString() || new Date().toISOString(),
-        status: "scheduled",
-      });
+  const handleDisconnect = async () => {
+    try {
+      await disconnectCalendar();
+      setStatus((current) =>
+        current
+          ? { ...current, connected: false, lastSyncedAt: null }
+          : { connected: false, provider: "google", lastSyncedAt: null },
+      );
+      toast({ title: t("calendar.disconnected"), tone: "info" });
+    } catch {
+      toast({ title: t("errors.generic"), tone: "error" });
+    } finally {
+      setDisconnectOpen(false);
     }
   };
 
-  // Status-based color mapping for FullCalendar events
-  const getEventStyle = (status: CalendarEventItem["status"], isAiBooked?: boolean) => {
-    if (isAiBooked) {
-      return {
-        backgroundColor: "rgba(168, 85, 247, 0.2)",
-        borderColor: "#a855f7",
-        textColor: "#e9d5ff",
-      };
+  const fcEvents = useMemo(
+    () =>
+      events.map((event) => ({
+        id: event.id,
+        title: event.title,
+        start: event.start,
+        end: event.end,
+        classNames: [`status-${event.status}`],
+        extendedProps: { status: event.status },
+      })),
+    [events],
+  );
+
+  const filteredForList = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    return events
+      .filter((event) => (term ? event.title.toLowerCase().includes(term) : true))
+      .slice()
+      .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+  }, [events, search]);
+
+  const grouped = useMemo(() => {
+    const groups = new Map<string, CalendarEventItem[]>();
+    for (const event of filteredForList) {
+      const key = formatDate(event.start, lang, "long");
+      const bucket = groups.get(key);
+      if (bucket) bucket.push(event);
+      else groups.set(key, [event]);
     }
-    switch (status) {
-      case "summarized":
-        return {
-          backgroundColor: "rgba(16, 185, 129, 0.2)",
-          borderColor: "#10b981",
-          textColor: "#a7f3d0",
-        };
-      case "needs_review":
-        return {
-          backgroundColor: "rgba(245, 158, 11, 0.2)",
-          borderColor: "#f59e0b",
-          textColor: "#fde68a",
-        };
-      case "processing":
-        return {
-          backgroundColor: "rgba(6, 182, 212, 0.2)",
-          borderColor: "#06b6d4",
-          textColor: "#a5f3fc",
-        };
-      default:
-        return {
-          backgroundColor: "rgba(59, 130, 246, 0.2)",
-          borderColor: "#3b82f6",
-          textColor: "#bfdbfe",
-        };
-    }
+    return Array.from(groups.entries());
+  }, [filteredForList, lang]);
+
+  const onEventClick = useCallback(
+    (arg: EventClickArg) => {
+      const match = events.find((event) => event.id === arg.event.id);
+      if (match) setSelectedEvent(match);
+    },
+    [events],
+  );
+
+  const onDatesSet = useCallback((arg: DatesSetArg) => {
+    const next = arg.view.currentStart;
+    setMonthDate((current) => (current.getTime() === next.getTime() ? current : next));
+  }, []);
+
+  // FullCalendar re-runs custom renderers whenever their identity changes; an inline
+  // function here causes an infinite render/update loop.
+  const renderEventContent = useCallback(
+    (arg: EventContentArg) => (
+      <div className="flex min-w-0 items-center gap-1.5 px-0.5">
+        {arg.view.type === "timeGridWeek" && arg.timeText ? (
+          <span className="shrink-0 text-[10px] tabular opacity-80">{arg.timeText}</span>
+        ) : null}
+        <span className="truncate text-[11px] font-medium" dir="auto">
+          {arg.event.title}
+        </span>
+      </div>
+    ),
+    [],
+  );
+
+  const shift = (direction: -1 | 1) => {
+    const api = calendarRef.current?.getApi();
+    if (!api) return;
+    if (direction === -1) api.prev();
+    else api.next();
   };
 
-  const calendarEvents = events.map((e) => {
-    const style = getEventStyle(e.status, e.isAiBooked);
-    return {
-      id: e.id,
-      title: `${e.isAiBooked ? "✨ " : ""}${e.title}`,
-      start: e.start,
-      end: e.end,
-      backgroundColor: style.backgroundColor,
-      borderColor: style.borderColor,
-      textColor: style.textColor,
-      classNames: ["cursor-pointer", "font-medium", "text-xs", "rounded-md", "px-1"],
-    };
-  });
-
-  const now = new Date();
-  const filteredEvents = events.filter((e) => {
-    if (searchQuery.trim() && !e.title.toLowerCase().includes(searchQuery.toLowerCase())) {
-      return false;
-    }
-    const isPast = new Date(e.end) < now;
-    return listSubTab === "past" ? isPast : !isPast;
-  });
+  const connected = status?.connected ?? false;
 
   return (
-    <div className="flex flex-col gap-6 animate-in fade-in duration-200">
-      {/* Top Header & Connection Bar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-5 rounded-2xl border border-slate-800 bg-slate-900/60 backdrop-blur">
+    <div className="space-y-5">
+      <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-              {t("calendar.title")}
-            </h1>
-            <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-cyan-950/60 border border-cyan-800/60 text-cyan-400">
-              Two-Way Sync
-            </span>
-          </div>
-          <p className="text-xs sm:text-sm text-slate-400 mt-1">
+          <h1 className="text-xl font-semibold sm:text-2xl">{t("calendar.title")}</h1>
+          <p className="mt-1 max-w-xl text-xs leading-relaxed text-fg-muted sm:text-sm">
             {t("calendar.subtitle")}
           </p>
         </div>
 
-        {/* Google Calendar Connection Status & Controls */}
-        <div className="flex flex-wrap items-center gap-2.5">
-          {connStatus.connected ? (
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-emerald-500/30 bg-emerald-950/20 text-emerald-400 text-xs">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-              </span>
-              <span className="font-semibold">{t("calendar.connectedStatus")}</span>
-              <button
-                onClick={handleSyncNow}
-                disabled={isSyncing}
-                title={t("calendar.syncNow")}
-                className="ms-1 p-1 hover:bg-emerald-900/40 rounded-md transition text-emerald-300 disabled:opacity-50"
+        <div className="flex flex-wrap items-center gap-2">
+          {connected ? (
+            <>
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<RefreshCw className="h-3.5 w-3.5" />}
+                loading={syncing}
+                onClick={handleSync}
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? "animate-spin" : ""}`} />
-              </button>
-              <button
-                onClick={handleToggleConnect}
-                className="ms-1 text-[11px] text-slate-400 hover:text-rose-400 underline transition"
+                {t("calendar.sync")}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<Unlink className="h-3.5 w-3.5" />}
+                onClick={() => setDisconnectOpen(true)}
               >
                 {t("calendar.disconnect")}
-              </button>
-            </div>
+              </Button>
+            </>
           ) : (
-            <button
-              onClick={handleToggleConnect}
-              className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-white text-slate-900 hover:bg-slate-100 transition shadow-sm cursor-pointer"
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<Link2 className="h-3.5 w-3.5" />}
+              loading={connecting}
+              onClick={handleConnect}
             >
-              <svg className="w-4 h-4" viewBox="0 0 24 24">
-                <path
-                  fill="#4285F4"
-                  d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                />
-                <path
-                  fill="#34A853"
-                  d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                />
-                <path
-                  fill="#FBBC05"
-                  d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                />
-                <path
-                  fill="#EA4335"
-                  d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                />
-              </svg>
-              <span>{t("calendar.connectGoogle")}</span>
-            </button>
+              {t("calendar.connect")}
+            </Button>
           )}
-
-          {/* Mode Switch: Calendar Grid vs List */}
-          <div className="flex items-center rounded-xl border border-slate-800 p-0.5 bg-slate-950 text-xs">
-            <button
-              onClick={() => setActiveTab("calendar")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium transition ${
-                activeTab === "calendar"
-                  ? "bg-slate-800 text-cyan-400 font-bold shadow-sm"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              <CalendarIcon className="w-3.5 h-3.5" />
-              <span>{t("calendar.viewMonth")}</span>
-            </button>
-            <button
-              onClick={() => setActiveTab("list")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium transition ${
-                activeTab === "list"
-                  ? "bg-slate-800 text-cyan-400 font-bold shadow-sm"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              <ListIcon className="w-3.5 h-3.5" />
-              <span>{t("calendar.viewList")}</span>
-            </button>
-          </div>
         </div>
-      </div>
+      </header>
 
-      {/* Main Content Area */}
-      {isLoading ? (
-        <div className="flex items-center justify-center py-24 rounded-2xl border border-slate-800 bg-slate-900/60">
-          <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
-        </div>
-      ) : activeTab === "calendar" ? (
-        <div className="relative rounded-2xl border border-slate-800 bg-slate-900/60 p-4 sm:p-6 backdrop-blur shadow-xl">
-          {/* Calendar Status Legend */}
-          <div className="flex flex-wrap items-center gap-4 mb-4 text-xs text-slate-400 border-b border-slate-800/80 pb-3">
-            <span className="font-semibold text-slate-300">دلالات الألوان:</span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-blue-500"></span>
-              قادم ومجدول
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
-              تم التلخيص والاعتماد
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
-              يحتاج مراجعة (مهام معلقة)
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-purple-500"></span>
-              حجزه دوّن بالذكاء الاصطناعي ✨
-            </span>
-          </div>
-
-          {/* FullCalendar Wrapper */}
-          <div className="dawwen-calendar-wrapper min-h-[550px]" dir={isRtl ? "rtl" : "ltr"}>
-            <FullCalendar
-              ref={calendarRef}
-              plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
-              initialView="dayGridMonth"
-              direction={isRtl ? "rtl" : "ltr"}
-              headerToolbar={{
-                start: "prev,next today",
-                center: "title",
-                end: "dayGridMonth,timeGridWeek,timeGridDay",
-              }}
-              buttonText={{
-                today: t("calendar.today"),
-                month: t("calendar.viewMonth"),
-                week: t("calendar.viewWeek"),
-                day: t("calendar.viewDay"),
-              }}
-              events={calendarEvents}
-              eventClick={handleEventClick}
-              height="auto"
-              firstDay={6} // Saturday in Egypt / Middle East
-              weekends={true}
-              nowIndicator={true}
+      <Card className="overflow-hidden">
+        <div className="flex flex-col gap-3 border-b border-line p-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-2">
+            <IconButton
+              label={t("calendar.previous")}
+              icon={<ChevronRight className="h-4 w-4 ltr:rotate-180" />}
+              onClick={() => shift(-1)}
+              disabled={view === "list"}
             />
+            <h2 className="min-w-36 text-center text-sm font-semibold tabular">
+              {formatMonthYear(monthDate, lang)}
+            </h2>
+            <IconButton
+              label={t("calendar.next")}
+              icon={<ChevronLeft className="h-4 w-4 ltr:rotate-180" />}
+              onClick={() => shift(1)}
+              disabled={view === "list"}
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                calendarRef.current?.getApi().today();
+                setMonthDate(new Date());
+              }}
+              disabled={view === "list"}
+            >
+              {t("calendar.today")}
+            </Button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Segmented
+              ariaLabel={t("calendar.viewLabel")}
+              value={view}
+              onChange={setView}
+              options={[
+                { value: "month", label: t("calendar.viewMonth") },
+                { value: "week", label: t("calendar.viewWeek") },
+                { value: "list", label: t("calendar.viewList") },
+              ]}
+            />
+            <span className="inline-flex items-center gap-1.5 text-xs text-fg-subtle">
+              <span
+                aria-hidden
+                className={cn("h-1.5 w-1.5 rounded-full", connected ? "bg-success" : "bg-warning")}
+              />
+              {connected
+                ? t("calendar.lastSynced", {
+                    time: status?.lastSyncedAt ? formatTime(status.lastSyncedAt, lang) : "—",
+                  })
+                : t("calendar.notConnected")}
+            </span>
           </div>
         </div>
-      ) : (
-        /* List View (Upcoming / Past) */
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-2xl border border-slate-800 bg-slate-900/60">
-            {/* Sub-tabs: Upcoming vs Past */}
-            <div className="flex items-center gap-2 p-1 rounded-xl bg-slate-950 border border-slate-800 text-xs">
-              <button
-                onClick={() => setListSubTab("upcoming")}
-                className={`px-4 py-1.5 rounded-lg font-semibold transition ${
-                  listSubTab === "upcoming"
-                    ? "bg-cyan-500 text-slate-950 shadow-sm"
-                    : "text-slate-400 hover:text-white"
-                }`}
-              >
-                {t("calendar.upcomingTab")}
-              </button>
-              <button
-                onClick={() => setListSubTab("past")}
-                className={`px-4 py-1.5 rounded-lg font-semibold transition ${
-                  listSubTab === "past"
-                    ? "bg-cyan-500 text-slate-950 shadow-sm"
-                    : "text-slate-400 hover:text-white"
-                }`}
-              >
-                {t("calendar.pastTab")}
-              </button>
-            </div>
 
-            {/* Search Input */}
-            <div className="relative w-full sm:w-64">
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={t("calendar.filterSearch")}
-                className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+        {loading ? (
+          <div className="grid gap-2 p-4 sm:grid-cols-7">
+            {Array.from({ length: 28 }).map((_, index) => (
+              <Skeleton key={index} className="h-16" />
+            ))}
+          </div>
+        ) : view === "list" ? (
+          <div className="p-3 sm:p-4">
+            <div className="relative mb-3 max-w-sm">
+              <Input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder={t("calendar.searchPlaceholder")}
+                aria-label={t("calendar.searchPlaceholder")}
+                className="ps-3"
               />
             </div>
-          </div>
 
-          {/* Events List */}
-          {filteredEvents.length === 0 ? (
-            <div className="text-center py-16 px-4 rounded-2xl border border-dashed border-slate-800 bg-slate-900/30">
-              <CalendarCheck2 className="w-10 h-10 text-slate-600 mx-auto mb-3" />
-              <p className="text-sm font-semibold text-slate-300">
-                {listSubTab === "upcoming" ? t("calendar.noUpcoming") : t("calendar.noPast")}
-              </p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 gap-3">
-              {filteredEvents.map((evt) => {
-                const startDate = new Date(evt.start);
-                const endDate = new Date(evt.end);
-                return (
-                  <div
-                    key={evt.id}
-                    onClick={() => setSelectedEvent(evt)}
-                    className="p-4 rounded-2xl border border-slate-800/80 bg-slate-900/60 hover:border-slate-700 hover:bg-slate-900 transition flex flex-col sm:flex-row sm:items-center justify-between gap-4 cursor-pointer group"
+            {grouped.length === 0 ? (
+              <EmptyState
+                icon={<CalendarDays />}
+                title={t("calendar.emptyTitle")}
+                description={t("calendar.emptyBody")}
+                action={
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    icon={<CalendarPlus className="h-4 w-4" />}
+                    onClick={() => onStartRecordingForMeeting("")}
                   >
-                    <div className="flex items-start gap-4">
-                      {/* Date Badge */}
-                      <div className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-center shrink-0 min-w-[65px]">
-                        <span className="block text-xs font-bold text-cyan-400">
-                          {startDate.toLocaleDateString(isRtl ? "ar-EG" : "en-US", { month: "short" })}
-                        </span>
-                        <span className="block text-lg font-black text-white">
-                          {startDate.getDate()}
-                        </span>
-                      </div>
-
-                      {/* Info */}
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h3 className="text-sm font-bold text-white group-hover:text-cyan-400 transition" dir="auto">
-                            {evt.title}
-                          </h3>
-                          {evt.isAiBooked && (
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-950/80 border border-purple-800 text-purple-300 flex items-center gap-1">
-                              <Sparkles className="w-2.5 h-2.5" />
-                              {t("calendar.aiBookedBadge")}
-                            </span>
-                          )}
-                          <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
-                              evt.status === "summarized"
-                                ? "bg-emerald-950/60 border-emerald-800 text-emerald-300"
-                                : evt.status === "needs_review"
-                                ? "bg-amber-950/60 border-amber-800 text-amber-300"
-                                : "bg-blue-950/60 border-blue-800 text-blue-300"
-                            }`}
+                    {t("calendar.schedule")}
+                  </Button>
+                }
+                className="border-0 bg-transparent"
+              />
+            ) : (
+              <div className="space-y-5">
+                {grouped.map(([day, dayEvents]) => (
+                  <section key={day}>
+                    <h3 className="mb-2 text-xs font-medium text-fg-muted">{day}</h3>
+                    <ul className="space-y-2">
+                      {dayEvents.map((event) => (
+                        <li key={event.id}>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedEvent(event)}
+                            className="flex w-full items-start gap-3 rounded-xl border border-line bg-surface px-3 py-2.5 text-start transition-colors hover:border-line-strong hover:bg-raised/40"
                           >
-                            {t(`calendar.meetingStatus.${evt.status}`)}
-                          </span>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-4 mt-2 text-xs text-slate-400">
-                          <span className="flex items-center gap-1.5">
-                            <Clock className="w-3.5 h-3.5 text-slate-500" />
-                            {startDate.toLocaleTimeString(isRtl ? "ar-EG" : "en-US", {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
-                            {" - "}
-                            {endDate.toLocaleTimeString(isRtl ? "ar-EG" : "en-US", {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
-                          </span>
-                          {evt.location && (
-                            <span className="flex items-center gap-1.5">
-                              <MapPin className="w-3.5 h-3.5 text-slate-500" />
-                              {evt.location}
+                            <span className="mt-0.5 tabular text-xs font-medium text-fg-muted">
+                              {formatTime(event.start, lang)}
                             </span>
-                          )}
-                          {evt.attendees && evt.attendees.length > 0 && (
-                            <span className="flex items-center gap-1.5">
-                              <Users className="w-3.5 h-3.5 text-slate-500" />
-                              {evt.attendees.length} مشاركين
+                            <span className="min-w-0 flex-1">
+                              <span
+                                className="block truncate text-sm font-medium text-fg"
+                                dir="auto"
+                              >
+                                {event.title}
+                              </span>
+                              {event.location ? (
+                                <span className="mt-0.5 flex items-center gap-1 text-xs text-fg-subtle">
+                                  <MapPin aria-hidden className="h-3 w-3" />
+                                  <span className="truncate" dir="auto">
+                                    {event.location}
+                                  </span>
+                                </span>
+                              ) : null}
                             </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Quick CTA */}
-                    <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-                      {listSubTab === "upcoming" ? (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onStartRecordingForMeeting(evt.title);
-                          }}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-cyan-500 hover:bg-cyan-400 text-slate-950 shadow-sm transition"
-                        >
-                          <Mic className="w-3.5 h-3.5" />
-                          <span>{t("calendar.startRecordingNow")}</span>
-                        </button>
-                      ) : evt.meetingId ? (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onOpenMeetingDetail(evt.meetingId!);
-                          }}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border border-slate-700 bg-slate-800 hover:bg-slate-700 text-white transition"
-                        >
-                          <FileText className="w-3.5 h-3.5" />
-                          <span>{t("calendar.viewSummary")}</span>
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Slide-over Detail Drawer */}
-      {selectedEvent && (
-        <div className="fixed inset-0 z-50 flex items-center justify-end bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="w-full max-w-md h-full bg-slate-900 border-s border-slate-800 p-6 flex flex-col gap-6 shadow-2xl overflow-y-auto">
-            {/* Drawer Header */}
-            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-              <div className="flex items-center gap-2">
-                <CalendarIcon className="w-5 h-5 text-cyan-400" />
-                <h2 className="text-base font-bold text-white">
-                  {t("calendar.detailsDrawerTitle")}
-                </h2>
-              </div>
-              <button
-                onClick={() => setSelectedEvent(null)}
-                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Event Title & Badges */}
-            <div className="flex flex-col gap-2">
-              <h3 className="text-lg font-bold text-white" dir="auto">
-                {selectedEvent.title}
-              </h3>
-              <div className="flex flex-wrap items-center gap-2">
-                {selectedEvent.isAiBooked && (
-                  <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-purple-950/80 border border-purple-800 text-purple-300 flex items-center gap-1">
-                    <Sparkles className="w-3 h-3" />
-                    {t("calendar.aiBookedBadge")}
-                  </span>
-                )}
-                <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-800 text-slate-300">
-                  {t(`calendar.meetingStatus.${selectedEvent.status}`)}
-                </span>
-              </div>
-            </div>
-
-            {/* Metadata Fields */}
-            <div className="flex flex-col gap-3 p-4 rounded-xl border border-slate-800 bg-slate-950 text-xs">
-              <div className="flex items-start gap-3">
-                <Clock className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
-                <div>
-                  <span className="text-slate-400 block mb-0.5">التاريخ والوقت:</span>
-                  <span className="font-semibold text-white">
-                    {new Date(selectedEvent.start).toLocaleString(isRtl ? "ar-EG" : "en-US")}
-                    {" — "}
-                    {new Date(selectedEvent.end).toLocaleTimeString(isRtl ? "ar-EG" : "en-US", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </span>
-                </div>
-              </div>
-
-              {selectedEvent.location && (
-                <div className="flex items-start gap-3">
-                  <MapPin className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
-                  <div>
-                    <span className="text-slate-400 block mb-0.5">{t("calendar.location")}:</span>
-                    <span className="font-semibold text-white">{selectedEvent.location}</span>
-                  </div>
-                </div>
-              )}
-
-              {selectedEvent.attendees && selectedEvent.attendees.length > 0 && (
-                <div className="flex items-start gap-3">
-                  <Users className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
-                  <div>
-                    <span className="text-slate-400 block mb-0.5">{t("calendar.attendees")}:</span>
-                    <div className="flex flex-wrap gap-1 mt-1">
-                      {selectedEvent.attendees.map((email, idx) => (
-                        <span
-                          key={idx}
-                          className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-800 text-slate-300 text-[11px]"
-                        >
-                          {email}
-                        </span>
+                            <CalendarStatusBadge status={event.status} />
+                          </button>
+                        </li>
                       ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Description / Summary */}
-            {selectedEvent.description && (
-              <div className="p-4 rounded-xl border border-slate-800/80 bg-slate-950/40 text-xs text-slate-300">
-                <span className="text-slate-500 block mb-1 font-semibold">الملخص والمحاور:</span>
-                <p dir="auto">{selectedEvent.description}</p>
+                    </ul>
+                  </section>
+                ))}
               </div>
             )}
-
-            {/* Action Buttons */}
-            <div className="mt-auto flex flex-col gap-2 pt-4 border-t border-slate-800">
-              <button
-                onClick={() => {
-                  setSelectedEvent(null);
-                  onStartRecordingForMeeting(selectedEvent.title);
-                }}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white shadow-lg shadow-cyan-500/20 transition cursor-pointer"
-              >
-                <Mic className="w-4 h-4" />
-                <span>{t("calendar.startRecordingNow")}</span>
-              </button>
-
-              {selectedEvent.meetingId && (
-                <button
-                  onClick={() => {
-                    const id = selectedEvent.meetingId!;
-                    setSelectedEvent(null);
-                    onOpenMeetingDetail(id);
-                  }}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold border border-slate-700 bg-slate-800 hover:bg-slate-700 text-white transition cursor-pointer"
-                >
-                  <FileText className="w-4 h-4" />
-                  <span>{t("calendar.viewSummary")}</span>
-                </button>
-              )}
-
-              {selectedEvent.htmlLink && (
-                <a
-                  href={selectedEvent.htmlLink}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white transition"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  <span>فتح في Google Calendar</span>
-                </a>
-              )}
-            </div>
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="dawwen-calendar p-1 sm:p-2">
+            <FullCalendar
+              key={`${i18n.language}-${view}`}
+              ref={calendarRef}
+              plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
+              initialView={view === "week" ? "timeGridWeek" : "dayGridMonth"}
+              locale={lang === "ar" ? "ar" : "en"}
+              locales={[arLocale]}
+              direction={i18n.dir()}
+              firstDay={6}
+              height="auto"
+              expandRows
+              fixedWeekCount={false}
+              dayMaxEvents={3}
+              eventDisplay="block"
+              headerToolbar={false}
+              events={fcEvents}
+              eventClick={onEventClick}
+              datesSet={onDatesSet}
+              eventTimeFormat={EVENT_TIME_FORMAT}
+              eventContent={renderEventContent}
+            />
+          </div>
+        )}
+      </Card>
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-fg-subtle">
+        <span className="inline-flex items-center gap-1.5">
+          <span aria-hidden className="h-2 w-2 rounded-full bg-brand" />
+          {t("calendar.legendScheduled")}
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span aria-hidden className="h-2 w-2 rounded-full bg-success" />
+          {t("calendar.legendSummarized")}
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span aria-hidden className="h-2 w-2 rounded-full bg-info" />
+          {t("calendar.legendProcessing")}
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span aria-hidden className="h-2 w-2 rounded-full bg-warning" />
+          {t("calendar.legendReview")}
+        </span>
+      </div>
+
+      <Modal
+        open={selectedEvent !== null}
+        onClose={() => setSelectedEvent(null)}
+        placement="end"
+        title={selectedEvent?.title ?? ""}
+        footer={
+          selectedEvent ? (
+            <>
+              {selectedEvent.htmlLink ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={<ExternalLink className="h-3.5 w-3.5" />}
+                  onClick={() =>
+                    window.open(selectedEvent.htmlLink, "_blank", "noopener,noreferrer")
+                  }
+                >
+                  {t("calendar.openInGoogle")}
+                </Button>
+              ) : null}
+              {selectedEvent.meetingId ? (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  icon={<Rows3 className="h-3.5 w-3.5" />}
+                  onClick={() => {
+                    onOpenMeetingDetail(selectedEvent.meetingId as string);
+                    setSelectedEvent(null);
+                  }}
+                >
+                  {t("calendar.openMeeting")}
+                </Button>
+              ) : (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  icon={<Mic className="h-3.5 w-3.5" />}
+                  onClick={() => {
+                    onStartRecordingForMeeting(selectedEvent.title);
+                    setSelectedEvent(null);
+                  }}
+                >
+                  {t("calendar.recordThis")}
+                </Button>
+              )}
+            </>
+          ) : null
+        }
+      >
+        {selectedEvent ? (
+          <div className="space-y-4">
+            <CalendarStatusBadge status={selectedEvent.status} />
+
+            <div className="space-y-2.5 text-sm">
+              <p className="flex items-start gap-2 text-fg-muted">
+                <Clock3 aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
+                <span className="tabular">
+                  {formatDateTime(selectedEvent.start, lang)} —{" "}
+                  {formatTime(selectedEvent.end, lang)}
+                </span>
+              </p>
+              {selectedEvent.location ? (
+                <p className="flex items-start gap-2 text-fg-muted">
+                  <MapPin aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span dir="auto">{selectedEvent.location}</span>
+                </p>
+              ) : null}
+              {selectedEvent.attendees && selectedEvent.attendees.length > 0 ? (
+                <p className="flex items-start gap-2 text-fg-muted">
+                  <Users aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span className="break-all" dir="ltr">
+                    {selectedEvent.attendees.join(" · ")}
+                  </span>
+                </p>
+              ) : null}
+            </div>
+
+            {selectedEvent.description ? (
+              <p
+                className="rounded-xl border border-line bg-raised/40 p-3 text-xs leading-relaxed text-fg-muted"
+                dir="auto"
+              >
+                {selectedEvent.description}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+      </Modal>
+
+      <ConfirmDialog
+        open={disconnectOpen}
+        title={t("calendar.disconnectTitle")}
+        description={t("calendar.disconnectBody")}
+        confirmLabel={t("calendar.disconnect")}
+        onConfirm={handleDisconnect}
+        onClose={() => setDisconnectOpen(false)}
+      />
     </div>
   );
 }

@@ -1,24 +1,31 @@
-import { useState, useEffect, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  ShieldCheck,
-  Calendar,
-  CheckCircle2,
-  XCircle,
-  Clock,
-  MapPin,
-  Users,
-  ExternalLink,
-  Inbox,
-  AlertCircle,
-  Loader2,
-} from "lucide-react";
+import { CalendarDays, Check, Inbox, MapPin, RefreshCw, ShieldCheck, Users, X } from "lucide-react";
 import type { Proposal } from "../types";
-import { fetchProposals, approveProposal, rejectProposal } from "../api";
+import { approveProposal, fetchProposals, rejectProposal } from "../api";
+import { formatDateTime, formatRelativeTime } from "../lib/format";
+import { ProposalActionBadge, ProposalStatusBadge } from "./StatusBadges";
+import {
+  Button,
+  Card,
+  CardBody,
+  EmptyState,
+  InlineAlert,
+  ReasonDialog,
+  Segmented,
+  Skeleton,
+  useToast,
+} from "./ui";
+
+type Filter = "pending" | "all" | "done" | "rejected";
 
 interface ProposalsInboxProps {
   onProposalsCountChange?: (count: number) => void;
   onNavigateToCalendar?: () => void;
+}
+
+function asText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 export function ProposalsInbox({
@@ -26,366 +33,269 @@ export function ProposalsInbox({
   onNavigateToCalendar,
 }: ProposalsInboxProps) {
   const { t, i18n } = useTranslation();
-  const isRtl = i18n.language === "ar";
+  const lang = i18n.language;
+  const { toast } = useToast();
 
   const [proposals, setProposals] = useState<Proposal[]>([]);
-  const [filterStatus, setFilterStatus] = useState<string>("ALL");
-  const [isLoading, setIsLoading] = useState(true);
-  const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
-  const [successNotice, setSuccessNotice] = useState<string | null>(null);
+  const [filter, setFilter] = useState<Filter>("pending");
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [rejecting, setRejecting] = useState<Proposal | null>(null);
 
-  const loadProposals = useCallback(async () => {
-    setIsLoading(true);
+  const load = useCallback(async () => {
+    setLoading(true);
     try {
       const data = await fetchProposals();
       setProposals(data);
-      const count = data.filter((p) => p.status === "PENDING_APPROVAL").length;
-      onProposalsCountChange?.(count);
-    } catch (err: unknown) {
-      console.error("Failed to load proposals", err);
+    } catch {
+      toast({ title: t("errors.generic"), tone: "error" });
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
-  }, [onProposalsCountChange]);
+  }, [t, toast]);
 
   useEffect(() => {
-    void loadProposals();
-  }, [loadProposals]);
+    void load();
+  }, [load]);
 
-  const handleApprove = async (id: string) => {
-    setActionLoadingId(id);
-    setSuccessNotice(null);
+  const pendingCount = proposals.filter(
+    (proposal) => proposal.status === "PENDING_APPROVAL",
+  ).length;
+
+  useEffect(() => {
+    onProposalsCountChange?.(pendingCount);
+  }, [pendingCount, onProposalsCountChange]);
+
+  const visible = useMemo(() => {
+    if (filter === "all") return proposals;
+    if (filter === "pending") return proposals.filter((p) => p.status === "PENDING_APPROVAL");
+    if (filter === "rejected") return proposals.filter((p) => p.status === "REJECTED");
+    return proposals.filter((p) => p.status === "APPROVED" || p.status === "EXECUTED");
+  }, [proposals, filter]);
+
+  const patch = (id: string, next: Partial<Proposal>) =>
+    setProposals((current) =>
+      current.map((item) => (item.id === id ? { ...item, ...next } : item)),
+    );
+
+  const handleApprove = async (proposal: Proposal) => {
+    setBusyId(proposal.id);
     try {
-      const result = await approveProposal(id, true);
-      setProposals((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, status: "EXECUTED" as const } : p)),
-      );
-      setSuccessNotice(
-        `تم اعتماد المقترح وحجز الموعد بنجاح على تقويم Google Calendar: "${result.details.title || "اجتماع متابعة"}"`,
-      );
-      const pendingCount = proposals.filter(
-        (p) => p.id !== id && p.status === "PENDING_APPROVAL",
-      ).length;
-      onProposalsCountChange?.(pendingCount);
-    } catch (err: unknown) {
-      alert("فشل تنفيذ المقترح: " + (err instanceof Error ? err.message : String(err)));
+      const result = await approveProposal(proposal.id);
+      patch(proposal.id, {
+        status: (result.proposal?.status ?? "EXECUTED") as Proposal["status"],
+      });
+      toast({
+        title: t("proposals.approvedToast"),
+        description:
+          proposal.actionType === "SCHEDULE_MEETING" ? t("proposals.approvedCalendar") : undefined,
+        tone: "success",
+      });
+    } catch {
+      toast({ title: t("errors.generic"), tone: "error" });
     } finally {
-      setActionLoadingId(null);
+      setBusyId(null);
     }
   };
 
-  const handleReject = async (id: string) => {
-    const reason = prompt("سبب رفض المقترح (اختياري):", "الوقت غير مناسب أو تم التنسيق هاتفياً");
-    if (reason === null) return;
-
-    setActionLoadingId(id);
+  const handleReject = async (reason: string) => {
+    if (!rejecting) return;
+    const proposal = rejecting;
+    setBusyId(proposal.id);
     try {
-      await rejectProposal(id, reason);
-      setProposals((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, status: "REJECTED" as const, reason } : p)),
-      );
-      const pendingCount = proposals.filter(
-        (p) => p.id !== id && p.status === "PENDING_APPROVAL",
-      ).length;
-      onProposalsCountChange?.(pendingCount);
-    } catch (err: unknown) {
-      alert("فشل رفض المقترح: " + (err instanceof Error ? err.message : String(err)));
+      await rejectProposal(proposal.id, reason);
+      patch(proposal.id, { status: "REJECTED", reason: reason || null });
+      toast({ title: t("proposals.rejectedToast"), tone: "info" });
+      setRejecting(null);
+    } catch {
+      toast({ title: t("errors.generic"), tone: "error" });
     } finally {
-      setActionLoadingId(null);
+      setBusyId(null);
     }
   };
-
-  const filtered = proposals.filter((p) => {
-    if (filterStatus === "ALL") return true;
-    return p.status === filterStatus;
-  });
-
-  const pendingCount = proposals.filter((p) => p.status === "PENDING_APPROVAL").length;
 
   return (
-    <div className="flex flex-col gap-6 animate-in fade-in duration-200">
-      {/* Page Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 rounded-2xl border border-slate-800 bg-slate-900/60 backdrop-blur">
+    <div className="space-y-5">
+      <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-              {t("proposalsInbox.title")}
-            </h1>
-            {pendingCount > 0 && (
-              <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-500 text-slate-950 animate-pulse">
-                {pendingCount} {t("proposalsInbox.filterPending")}
-              </span>
-            )}
-          </div>
-          <p className="text-xs sm:text-sm text-slate-400 mt-1">
-            {t("proposalsInbox.subtitle")}
+          <h1 className="text-xl font-semibold sm:text-2xl">{t("proposals.title")}</h1>
+          <p className="mt-1 max-w-xl text-xs leading-relaxed text-fg-muted sm:text-sm">
+            {t("proposals.subtitle")}
           </p>
         </div>
-
-        {onNavigateToCalendar && (
-          <button
-            onClick={onNavigateToCalendar}
-            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold border border-slate-700 bg-slate-800 hover:bg-slate-700 text-white transition self-start sm:self-auto cursor-pointer"
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={<RefreshCw className="h-3.5 w-3.5" />}
+            loading={loading}
+            onClick={load}
           >
-            <Calendar className="w-4 h-4 text-cyan-400" />
-            <span>عرض التقويم</span>
-          </button>
-        )}
+            {t("common.refresh")}
+          </Button>
+          {onNavigateToCalendar ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<CalendarDays className="h-3.5 w-3.5" />}
+              onClick={onNavigateToCalendar}
+            >
+              {t("proposals.openCalendar")}
+            </Button>
+          ) : null}
+        </div>
+      </header>
+
+      <InlineAlert tone="info" title={t("proposals.guaranteeTitle")}>
+        {t("proposals.guaranteeBody")}
+      </InlineAlert>
+
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Segmented
+          ariaLabel={t("proposals.filterLabel")}
+          value={filter}
+          onChange={setFilter}
+          options={[
+            { value: "pending", label: t("proposals.filterPending"), count: pendingCount },
+            { value: "all", label: t("common.all"), count: proposals.length },
+            {
+              value: "done",
+              label: t("proposals.filterDone"),
+              count: proposals.filter((p) => p.status === "APPROVED" || p.status === "EXECUTED")
+                .length,
+            },
+            {
+              value: "rejected",
+              label: t("proposals.filterRejected"),
+              count: proposals.filter((p) => p.status === "REJECTED").length,
+            },
+          ]}
+        />
       </div>
 
-      {/* Hard Invariant 1 Alert Banner */}
-      <div className="flex items-start gap-3 p-4 rounded-2xl border border-cyan-500/30 bg-cyan-950/20 text-cyan-200 text-xs sm:text-sm">
-        <ShieldCheck className="w-5 h-5 text-cyan-400 shrink-0 mt-0.5" />
-        <div className="flex-1">
-          <span className="font-bold block mb-0.5">
-            مبدأ الأمان الإلزامي (Hard Invariant 1 — Human-in-the-Loop):
-          </span>
-          <p className="text-cyan-300/90 text-xs leading-relaxed">
-            {t("proposalsInbox.invariantNotice")}
-          </p>
+      {loading ? (
+        <div className="space-y-3">
+          {[0, 1, 2].map((row) => (
+            <Skeleton key={row} className="h-40 rounded-card" />
+          ))}
         </div>
-      </div>
-
-      {/* Success Banner if action just executed */}
-      {successNotice && (
-        <div className="flex items-center justify-between gap-3 p-4 rounded-xl border border-emerald-500/40 bg-emerald-950/30 text-emerald-300 text-xs animate-in slide-in-from-top-2">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-            <span>{successNotice}</span>
-          </div>
-          <button
-            onClick={() => setSuccessNotice(null)}
-            className="text-emerald-400 hover:text-white text-xs font-semibold"
-          >
-            إغلاق
-          </button>
-        </div>
-      )}
-
-      {/* Filter Tabs */}
-      <div className="flex flex-wrap items-center gap-2 p-1.5 rounded-xl border border-slate-800 bg-slate-900/60 w-fit text-xs">
-        <button
-          onClick={() => setFilterStatus("ALL")}
-          className={`px-3 py-1.5 rounded-lg font-semibold transition ${
-            filterStatus === "ALL"
-              ? "bg-slate-800 text-cyan-400 shadow-sm"
-              : "text-slate-400 hover:text-white"
-          }`}
-        >
-          {t("proposalsInbox.filterAll")} ({proposals.length})
-        </button>
-        <button
-          onClick={() => setFilterStatus("PENDING_APPROVAL")}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition ${
-            filterStatus === "PENDING_APPROVAL"
-              ? "bg-amber-500/20 border border-amber-500/40 text-amber-300 shadow-sm"
-              : "text-slate-400 hover:text-white"
-          }`}
-        >
-          <span>{t("proposalsInbox.filterPending")}</span>
-          <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-500 text-slate-950">
-            {pendingCount}
-          </span>
-        </button>
-        <button
-          onClick={() => setFilterStatus("EXECUTED")}
-          className={`px-3 py-1.5 rounded-lg font-semibold transition ${
-            filterStatus === "EXECUTED"
-              ? "bg-slate-800 text-emerald-400 shadow-sm"
-              : "text-slate-400 hover:text-white"
-          }`}
-        >
-          {t("proposalsInbox.filterExecuted")}
-        </button>
-        <button
-          onClick={() => setFilterStatus("REJECTED")}
-          className={`px-3 py-1.5 rounded-lg font-semibold transition ${
-            filterStatus === "REJECTED"
-              ? "bg-slate-800 text-rose-400 shadow-sm"
-              : "text-slate-400 hover:text-white"
-          }`}
-        >
-          {t("proposalsInbox.filterRejected")}
-        </button>
-      </div>
-
-      {/* Proposals List */}
-      {isLoading ? (
-        <div className="flex items-center justify-center py-20 rounded-2xl border border-slate-800 bg-slate-900/30">
-          <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
-        </div>
-      ) : filtered.length === 0 ? (
-        <div className="text-center py-20 px-4 rounded-2xl border border-dashed border-slate-800 bg-slate-900/20">
-          <Inbox className="w-12 h-12 text-slate-600 mx-auto mb-3" />
-          <h3 className="text-sm font-bold text-white mb-1">
-            {t("proposalsInbox.emptyPending")}
-          </h3>
-          <p className="text-xs text-slate-400 max-w-sm mx-auto">
-            {t("proposalsInbox.emptyDesc")}
-          </p>
-        </div>
+      ) : visible.length === 0 ? (
+        <EmptyState
+          icon={<Inbox />}
+          title={
+            filter === "pending" ? t("proposals.emptyPendingTitle") : t("proposals.emptyTitle")
+          }
+          description={
+            filter === "pending" ? t("proposals.emptyPendingBody") : t("proposals.emptyBody")
+          }
+        />
       ) : (
-        <div className="grid grid-cols-1 gap-4">
-          {filtered.map((prop) => {
-            const isPending = prop.status === "PENDING_APPROVAL";
-            const isExecuted = prop.status === "EXECUTED";
-            const isRejected = prop.status === "REJECTED";
-            const payload = prop.payload || {};
+        <ul className="stagger space-y-3">
+          {visible.map((proposal) => {
+            const payload = proposal.payload ?? {};
+            const datetime = asText(payload.proposedDatetime);
+            const place = asText(payload.place);
+            const title = asText(payload.title);
+            const participants = Array.isArray(payload.participants)
+              ? payload.participants.filter((item): item is string => typeof item === "string")
+              : [];
+            const pending = proposal.status === "PENDING_APPROVAL";
 
             return (
-              <div
-                key={prop.id}
-                className={`p-5 rounded-2xl border transition flex flex-col gap-4 ${
-                  isPending
-                    ? "border-amber-500/30 bg-slate-900/80 shadow-lg shadow-amber-500/5 hover:border-amber-500/50"
-                    : isExecuted
-                    ? "border-emerald-500/30 bg-slate-900/50"
-                    : "border-slate-800 bg-slate-950/40 opacity-75"
-                }`}
-              >
-                {/* Header row */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
-                  <div className="flex items-center gap-2">
-                    <span className="p-2 rounded-xl bg-slate-950 border border-slate-800 text-cyan-400">
-                      <Calendar className="w-4 h-4" />
-                    </span>
-                    <div>
-                      <span className="text-xs font-semibold text-slate-400 block">
-                        {t("proposalsInbox.actionSchedule")}
-                      </span>
-                      <span className="text-[11px] text-slate-500">
-                        {new Date(prop.createdAt).toLocaleString(isRtl ? "ar-EG" : "en-US")}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Status Badge */}
-                  <div>
-                    {isPending && (
-                      <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-950/80 border border-amber-500/50 text-amber-300 flex items-center gap-1.5">
-                        <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
-                        {t("proposalsInbox.filterPending")}
-                      </span>
-                    )}
-                    {isExecuted && (
-                      <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-950/80 border border-emerald-500/50 text-emerald-300 flex items-center gap-1.5">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                        {t("proposalsInbox.filterExecuted")}
-                      </span>
-                    )}
-                    {isRejected && (
-                      <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-rose-950/80 border border-rose-500/50 text-rose-300 flex items-center gap-1.5">
-                        <XCircle className="w-3.5 h-3.5 text-rose-400" />
-                        {t("proposalsInbox.filterRejected")}
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                {/* Proposed Meeting Details */}
-                <div className="flex flex-col gap-2">
-                  <h3 className="text-base font-bold text-white" dir="auto">
-                    {payload.title || "اجتماع متابعة مقترح من الذكاء الاصطناعي"}
-                  </h3>
-
-                  {prop.reason && (
-                    <p className="text-xs text-slate-300 bg-slate-950/60 p-3 rounded-xl border border-slate-800/80 leading-relaxed" dir="auto">
-                      <span className="text-slate-500 font-semibold block mb-0.5">
-                        سياق الاقتراح من محضر الاجتماع:
-                      </span>
-                      {prop.reason}
-                    </p>
-                  )}
-                </div>
-
-                {/* Metadata Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 p-3.5 rounded-xl border border-slate-800 bg-slate-950 text-xs">
-                  <div className="flex items-center gap-2.5">
-                    <Clock className="w-4 h-4 text-cyan-400 shrink-0" />
-                    <div>
-                      <span className="text-slate-500 block text-[11px]">الموعد المقترح:</span>
-                      <span className="font-semibold text-white">
-                        {payload.proposedDatetime
-                          ? new Date(payload.proposedDatetime).toLocaleString(isRtl ? "ar-EG" : "en-US")
-                          : "الأسبوع القادم"}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2.5">
-                    <MapPin className="w-4 h-4 text-cyan-400 shrink-0" />
-                    <div>
-                      <span className="text-slate-500 block text-[11px]">المكان / المنصة:</span>
-                      <span className="font-semibold text-white">
-                        {payload.place || "Google Meet"}
-                      </span>
-                    </div>
-                  </div>
-
-                  {payload.participants && payload.participants.length > 0 && (
-                    <div className="flex items-center gap-2.5">
-                      <Users className="w-4 h-4 text-cyan-400 shrink-0" />
-                      <div>
-                        <span className="text-slate-500 block text-[11px]">المشاركون:</span>
-                        <span className="font-semibold text-white truncate max-w-[150px] block">
-                          {payload.participants.join(", ")}
-                        </span>
+              <li key={proposal.id}>
+                <Card className={pending ? "border-warning/25" : undefined}>
+                  <CardBody className="space-y-3">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <ProposalActionBadge action={proposal.actionType} />
+                        <ProposalStatusBadge status={proposal.status} />
                       </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Actions Footer */}
-                <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800/80">
-                  <div className="text-[11px] text-slate-500">
-                    معرف المقترح: <code className="text-slate-400">{prop.id}</code>
-                  </div>
-
-                  <div className="flex items-center gap-2.5 ms-auto">
-                    {isPending ? (
-                      <>
-                        <button
-                          onClick={() => handleReject(prop.id)}
-                          disabled={actionLoadingId === prop.id}
-                          className="px-3.5 py-1.5 rounded-xl text-xs font-semibold text-slate-400 hover:text-white hover:bg-slate-800 transition disabled:opacity-50 cursor-pointer"
-                        >
-                          {t("proposalsInbox.reject")}
-                        </button>
-                        <button
-                          onClick={() => handleApprove(prop.id)}
-                          disabled={actionLoadingId === prop.id}
-                          className="inline-flex items-center gap-2 px-4 py-1.5 rounded-xl text-xs font-bold bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 shadow-md shadow-emerald-500/20 transition disabled:opacity-50 cursor-pointer"
-                        >
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          <span>
-                            {actionLoadingId === prop.id
-                              ? "جاري الحجز بالتقويم..."
-                              : t("proposalsInbox.approveAndBook")}
-                          </span>
-                        </button>
-                      </>
-                    ) : isExecuted ? (
-                      <a
-                        href="https://calendar.google.com"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border border-emerald-500/30 bg-emerald-950/20 text-emerald-300 hover:bg-emerald-900/30 transition"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                        <span>{t("proposalsInbox.viewCalendarEvent")}</span>
-                      </a>
-                    ) : (
-                      <span className="text-xs text-rose-400">
-                        تم الرفض {prop.reason ? `(${prop.reason})` : ""}
+                      <span className="text-[11px] text-fg-subtle">
+                        {formatRelativeTime(proposal.createdAt, lang)}
                       </span>
-                    )}
-                  </div>
-                </div>
-              </div>
+                    </div>
+
+                    <h2 className="text-sm font-semibold text-fg" dir="auto">
+                      {title ?? t(`proposalAction.${proposal.actionType}`)}
+                    </h2>
+
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-fg-muted">
+                      {datetime ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <CalendarDays aria-hidden className="h-3.5 w-3.5" />
+                          <span className="tabular">{formatDateTime(datetime, lang)}</span>
+                        </span>
+                      ) : null}
+                      {place ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <MapPin aria-hidden className="h-3.5 w-3.5" />
+                          <span dir="auto">{place}</span>
+                        </span>
+                      ) : null}
+                      {participants.length > 0 ? (
+                        <span className="inline-flex min-w-0 items-center gap-1.5">
+                          <Users aria-hidden className="h-3.5 w-3.5 shrink-0" />
+                          <span className="break-all" dir="ltr">
+                            {participants.join(" · ")}
+                          </span>
+                        </span>
+                      ) : null}
+                    </div>
+
+                    {proposal.reason ? (
+                      <p className="rounded-lg border border-line bg-raised/40 px-3 py-2 text-xs text-fg-muted">
+                        <span className="font-medium text-fg">{t("common.reason")}: </span>
+                        <span dir="auto">{proposal.reason}</span>
+                      </p>
+                    ) : null}
+
+                    {pending ? (
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
+                        <p className="inline-flex items-center gap-1.5 text-[11px] text-fg-subtle">
+                          <ShieldCheck aria-hidden className="h-3.5 w-3.5" />
+                          {t("proposals.needsYou")}
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            icon={<X className="h-3.5 w-3.5" />}
+                            disabled={busyId === proposal.id}
+                            onClick={() => setRejecting(proposal)}
+                          >
+                            {t("proposals.reject")}
+                          </Button>
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            icon={<Check className="h-3.5 w-3.5" />}
+                            loading={busyId === proposal.id}
+                            onClick={() => handleApprove(proposal)}
+                          >
+                            {proposal.actionType === "SCHEDULE_MEETING"
+                              ? t("proposals.approveAndSchedule")
+                              : t("proposals.approve")}
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </CardBody>
+                </Card>
+              </li>
             );
           })}
-        </div>
+        </ul>
       )}
+
+      <ReasonDialog
+        open={rejecting !== null}
+        title={t("proposals.rejectTitle")}
+        description={t("proposals.rejectHint")}
+        confirmLabel={t("proposals.reject")}
+        loading={busyId === rejecting?.id}
+        onSubmit={handleReject}
+        onClose={() => setRejecting(null)}
+      />
     </div>
   );
 }

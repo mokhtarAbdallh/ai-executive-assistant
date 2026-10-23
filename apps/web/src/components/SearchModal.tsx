@@ -1,8 +1,10 @@
-import React, { useState, useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Search, X, Calendar, Sparkles, Loader2 } from "lucide-react";
+import { CornerDownLeft, Search, Sparkles } from "lucide-react";
 import type { SearchCitation } from "../types";
 import { hybridSearch } from "../api";
+import { cn } from "../lib/cn";
+import { Badge, EmptyState, Input, Modal, Skeleton } from "./ui";
 
 interface SearchModalProps {
   isOpen: boolean;
@@ -10,151 +12,183 @@ interface SearchModalProps {
   onSelectResult: (citation: SearchCitation) => void;
 }
 
-export const SearchModal: React.FC<SearchModalProps> = ({
-  isOpen,
-  onClose,
-  onSelectResult,
-}) => {
-  const { i18n } = useTranslation();
-  const isArabic = i18n.language === "ar";
-
+export function SearchModal({ isOpen, onClose, onSelectResult }: SearchModalProps) {
+  const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchCitation[]>([]);
   const [loading, setLoading] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (isOpen) {
-      setTimeout(() => inputRef.current?.focus(), 50);
-    } else {
+    if (!isOpen) {
       setQuery("");
       setResults([]);
+      setActiveIndex(0);
+      return;
     }
+    const timer = window.setTimeout(() => inputRef.current?.focus(), 60);
+    return () => window.clearTimeout(timer);
   }, [isOpen]);
 
-  // Debounced search
   useEffect(() => {
-    if (!query.trim()) {
+    if (!isOpen) return;
+    const term = query.trim();
+    if (term.length < 2) {
       setResults([]);
       setLoading(false);
       return;
     }
 
+    let cancelled = false;
     setLoading(true);
-    const handler = setTimeout(async () => {
+    const timer = window.setTimeout(async () => {
       try {
-        const res = await hybridSearch(query);
-        setResults(res.results);
-      } catch (err) {
-        console.error(err);
+        const response = await hybridSearch(term);
+        if (!cancelled) {
+          setResults(response.results);
+          setActiveIndex(0);
+        }
+      } catch {
+        if (!cancelled) setResults([]);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
-    }, 250);
+    }, 320);
 
-    return () => clearTimeout(handler);
-  }, [query]);
-
-  // Close on Escape
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  }, [query, isOpen]);
 
-  if (!isOpen) return null;
+  const select = (citation: SearchCitation) => {
+    onSelectResult(citation);
+    onClose();
+  };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-start justify-center pt-16 md:pt-24 p-4 animate-in fade-in duration-200">
-      <div className="bg-slate-900 border border-slate-700/80 rounded-2xl w-full max-w-2xl overflow-hidden shadow-2xl flex flex-col max-h-[80vh]">
-        {/* Search Input Bar */}
-        <div className="flex items-center gap-3 px-4 py-3.5 border-b border-slate-800 bg-slate-900/90">
-          <Search className="w-5 h-5 text-cyan-400 shrink-0" />
-          <input
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={
-              isArabic
-                ? "ابحث في كل الاجتماعات والتفريغات الصوتية والقرارات..."
-                : "Search across all meetings, transcripts, and decisions..."
-            }
-            className="flex-1 bg-transparent text-white placeholder-slate-500 text-sm focus:outline-none"
-            dir="auto"
+    <Modal
+      open={isOpen}
+      onClose={onClose}
+      title={t("search.title")}
+      description={t("search.hint")}
+      size="lg"
+      bodyClassName="p-0"
+    >
+      <div className="border-b border-line p-3">
+        <div className="relative">
+          <Search
+            aria-hidden
+            className="pointer-events-none absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-subtle"
           />
-          {loading && <Loader2 className="w-4 h-4 text-cyan-400 animate-spin shrink-0" />}
-          {query && (
-            <button
-              onClick={() => setQuery("")}
-              className="p-1 text-slate-500 hover:text-slate-300"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          )}
-          <kbd className="hidden md:inline-block px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-400 border border-slate-700">
-            ESC
-          </kbd>
-        </div>
-
-        {/* Results List */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-2">
-          {query.trim() === "" ? (
-            <div className="py-12 text-center text-slate-500 text-xs space-y-2">
-              <Sparkles className="w-6 h-6 mx-auto text-slate-600" />
-              <p>{isArabic ? "ابحث بدلالة الكلمات أو المعنى في أي اجتماع سابق." : "Search by keyword or semantic meaning across past meetings."}</p>
-            </div>
-          ) : results.length === 0 && !loading ? (
-            <div className="py-12 text-center text-slate-500 text-xs">
-              <p>{isArabic ? "لم يتم العثور على نتائج مطابقة." : "No matching results found."}</p>
-            </div>
-          ) : (
-            results.map((item, idx) => (
-              <button
-                key={idx}
-                onClick={() => {
-                  onSelectResult(item);
-                  onClose();
-                }}
-                className="w-full text-start p-3.5 rounded-xl border border-slate-800/80 bg-slate-850 hover:bg-slate-800/80 hover:border-cyan-500/40 transition cursor-pointer group space-y-1.5"
-              >
-                <div className="flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-2">
-                    <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                    <span className="font-bold text-white group-hover:text-cyan-400 transition" dir="auto">
-                      {item.meetingTitle}
-                    </span>
-                    <span className="font-mono text-cyan-400/90 font-semibold bg-cyan-950/40 px-1.5 py-0.5 rounded border border-cyan-500/20 text-[11px]">
-                      {item.timestamp}
-                    </span>
-                  </div>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 font-medium">
-                    {item.matchType === "hybrid"
-                      ? isArabic
-                        ? "بحث هجين"
-                        : "Hybrid"
-                      : isArabic
-                        ? "نصي"
-                        : "Keyword"}
-                  </span>
-                </div>
-
-                <p className="text-xs text-slate-300 leading-relaxed line-clamp-2" dir="auto">
-                  {item.text}
-                </p>
-              </button>
-            ))
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="px-4 py-2 border-t border-slate-800 bg-slate-950/60 flex items-center justify-between text-[11px] text-slate-500">
-          <span>{isArabic ? "نتائج موثقة برقم الاجتماع والتوقيت الدقيق" : "Cited results with meeting title & exact timestamp"}</span>
-          <span>{results.length} {isArabic ? "نتيجة" : "results"}</span>
+          <Input
+            ref={inputRef}
+            value={query}
+            autoFocus
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setActiveIndex((index) => Math.min(index + 1, Math.max(0, results.length - 1)));
+              } else if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setActiveIndex((index) => Math.max(0, index - 1));
+              } else if (event.key === "Enter" && results[activeIndex]) {
+                event.preventDefault();
+                select(results[activeIndex]);
+              }
+            }}
+            placeholder={t("search.placeholder")}
+            aria-label={t("search.placeholder")}
+            className="ps-9"
+            role="combobox"
+            aria-expanded={results.length > 0}
+            aria-controls="search-results"
+            aria-activedescendant={
+              results[activeIndex] ? `search-result-${activeIndex}` : undefined
+            }
+          />
         </div>
       </div>
-    </div>
+
+      <div
+        id="search-results"
+        role="listbox"
+        aria-label={t("search.results")}
+        className="max-h-[55vh] overflow-y-auto p-2"
+      >
+        {loading ? (
+          <div className="space-y-2 p-1">
+            {[0, 1, 2].map((row) => (
+              <Skeleton key={row} className="h-14 rounded-lg" />
+            ))}
+          </div>
+        ) : query.trim().length < 2 ? (
+          <EmptyState
+            compact
+            icon={<Sparkles />}
+            title={t("search.startTitle")}
+            description={t("search.startBody")}
+            className="border-0 bg-transparent"
+          />
+        ) : results.length === 0 ? (
+          <EmptyState
+            compact
+            icon={<Search />}
+            title={t("search.noResultsTitle")}
+            description={t("search.noResultsBody")}
+            className="border-0 bg-transparent"
+          />
+        ) : (
+          <ul className="space-y-1">
+            {results.map((citation, index) => (
+              <li
+                key={`${citation.meetingId}-${citation.segmentId ?? index}`}
+                role="option"
+                aria-selected={index === activeIndex}
+                id={`search-result-${index}`}
+              >
+                <button
+                  type="button"
+                  onMouseEnter={() => setActiveIndex(index)}
+                  onClick={() => select(citation)}
+                  className={cn(
+                    "flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-start transition-colors",
+                    index === activeIndex ? "bg-raised" : "hover:bg-raised/60",
+                  )}
+                >
+                  <span className="mt-0.5 shrink-0 rounded-md border border-line bg-surface px-1.5 py-0.5 text-[11px] tabular text-fg-muted">
+                    {citation.timestamp}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-xs font-medium text-fg" dir="auto">
+                        {citation.meetingTitle}
+                      </span>
+                      <Badge tone={citation.matchType === "hybrid" ? "brand" : "neutral"}>
+                        {t(`search.match.${citation.matchType}`)}
+                      </Badge>
+                    </span>
+                    <span
+                      className="mt-0.5 line-clamp-2 block text-xs leading-relaxed text-fg-muted"
+                      dir="auto"
+                    >
+                      {citation.text}
+                    </span>
+                  </span>
+                  {index === activeIndex ? (
+                    <CornerDownLeft
+                      aria-hidden
+                      className="mt-0.5 h-3.5 w-3.5 shrink-0 text-fg-subtle"
+                    />
+                  ) : null}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Modal>
   );
-};
+}

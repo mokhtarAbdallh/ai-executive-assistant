@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Navbar } from "./components/Navbar";
+import { AppShell, type AppView } from "./components/AppShell";
 import { MeetingsList } from "./components/MeetingsList";
-import { MeetingDetail } from "./components/MeetingDetail";
+import { MeetingDetail, type MeetingTab } from "./components/MeetingDetail";
 import { NewMeetingModal } from "./components/NewMeetingModal";
 import { CalendarView } from "./components/CalendarView";
 import { ProposalsInbox } from "./components/ProposalsInbox";
@@ -10,279 +10,289 @@ import { AskChat } from "./components/AskChat";
 import { SearchModal } from "./components/SearchModal";
 import { BillingView } from "./components/BillingView";
 import { SettingsView } from "./components/SettingsView";
+import { Skeleton, ToastProvider, useToast } from "./components/ui";
 import {
-  fetchHealth,
-  fetchMeetings,
-  fetchMeetingDetail,
-  deleteMeeting,
   createMeeting,
+  deleteMeeting,
+  fetchHealth,
+  fetchMeetingDetail,
+  fetchMeetings,
+  fetchProposals,
   processDemoMeeting,
 } from "./api";
-import type { MeetingSummary, MeetingDetail as MeetingDetailType, SearchCitation } from "./types";
+import { setLanguage } from "./i18n";
+import { useTheme } from "./lib/theme";
+import type { MeetingDetail as MeetingDetailType, MeetingSummary, SearchCitation } from "./types";
+
+type View = AppView | "detail";
 
 export function App() {
-  const { i18n } = useTranslation();
+  return (
+    <ToastProvider>
+      <AppContent />
+    </ToastProvider>
+  );
+}
 
-  // Navigation State
-  const [currentView, setCurrentView] = useState<
-    "list" | "detail" | "calendar" | "proposals" | "chat" | "billing" | "settings"
-  >("list");
+function AppContent() {
+  const { t, i18n } = useTranslation();
+  const { toast } = useToast();
+  const { theme, toggleTheme } = useTheme();
+
+  const [view, setView] = useState<View>("meetings");
+  const [meetingTab, setMeetingTab] = useState<MeetingTab>("summary");
   const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
-  const [pendingProposalsCount, setPendingProposalsCount] = useState<number>(2);
+  const [pendingProposalsCount, setPendingProposalsCount] = useState(0);
 
-  // Data State
   const [meetings, setMeetings] = useState<MeetingSummary[]>([]);
   const [activeMeetingDetail, setActiveMeetingDetail] = useState<MeetingDetailType | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Modal State
-  const [isNewMeetingOpen, setIsNewMeetingOpen] = useState(false);
+  const [newMeetingOpen, setNewMeetingOpen] = useState(false);
   const [initialMeetingTitle, setInitialMeetingTitle] = useState("");
-  const [isSearchOpen, setIsSearchOpen] = useState(false);
-
-  // Health State
+  const [searchOpen, setSearchOpen] = useState(false);
   const [healthStatus, setHealthStatus] = useState<"connecting" | "connected" | "offline">(
     "connecting",
   );
-  const [uptime, setUptime] = useState<number | null>(null);
 
-  // Sync HTML lang and dir attribute with i18n
-  useEffect(() => {
-    const dir = i18n.dir();
-    const lang = i18n.language;
-    document.documentElement.setAttribute("dir", dir);
-    document.documentElement.setAttribute("lang", lang);
-  }, [i18n, i18n.language]);
+  const language = i18n.language.startsWith("en") ? "en" : "ar";
 
-  // Global Ctrl+K / Cmd+K listener
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
-        e.preventDefault();
-        setIsSearchOpen((prev) => !prev);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
-
-  // Load meetings
   const loadMeetings = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
-      const data = await fetchMeetings();
-      setMeetings(data);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "فشل الاتصال بالخادم");
+      setMeetings(await fetchMeetings());
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : t("errors.generic"));
     } finally {
       setIsLoading(false);
     }
+  }, [t]);
+
+  const loadPendingProposals = useCallback(async () => {
+    try {
+      const proposals = await fetchProposals();
+      setPendingProposalsCount(
+        proposals.filter((proposal) => proposal.status === "PENDING_APPROVAL").length,
+      );
+    } catch {
+      // The inbox is the source of truth; a failed badge is not worth an error toast.
+    }
   }, []);
 
-  // Check health periodically
+  useEffect(() => {
+    void loadMeetings();
+    void loadPendingProposals();
+  }, [loadMeetings, loadPendingProposals]);
+
   useEffect(() => {
     let mounted = true;
     const check = async () => {
-      try {
-        const res = await fetchHealth();
-        if (mounted && res.status === "ok") {
-          setHealthStatus("connected");
-          setUptime(res.uptimeSeconds ?? null);
-          return;
-        }
-        if (mounted) setHealthStatus("offline");
-      } catch {
-        if (mounted) setHealthStatus("offline");
-      }
+      const result = await fetchHealth();
+      if (mounted) setHealthStatus(result.status === "ok" ? "connected" : "offline");
     };
-
     void check();
-    const interval = setInterval(() => void check(), 10000);
+    const interval = window.setInterval(() => void check(), 15_000);
     return () => {
       mounted = false;
-      clearInterval(interval);
+      window.clearInterval(interval);
     };
   }, []);
 
-  // Initial load
   useEffect(() => {
-    void loadMeetings();
-  }, [loadMeetings]);
-
-  // View detail
-  const handleSelectMeeting = async (id: string) => {
-    setSelectedMeetingId(id);
-    setIsLoading(true);
-    try {
-      const detail = await fetchMeetingDetail(id);
-      setActiveMeetingDetail(detail);
-      setCurrentView("detail");
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "فشل تحميل تفاصيل الاجتماع");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Delete meeting
-  const handleDeleteMeeting = async (id: string) => {
-    try {
-      await deleteMeeting(id);
-      setMeetings((prev) => prev.filter((m) => m.id !== id));
-      if (selectedMeetingId === id) {
-        setSelectedMeetingId(null);
-        setActiveMeetingDetail(null);
-        setCurrentView("list");
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setSearchOpen((current) => !current);
       }
-    } catch (err: unknown) {
-      alert(err instanceof Error ? err.message : "فشل حذف الاجتماع");
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const openMeeting = useCallback(
+    async (id: string, tab: MeetingTab = "summary") => {
+      setSelectedMeetingId(id);
+      setMeetingTab(tab);
+      setDetailLoading(true);
+      try {
+        const detail = await fetchMeetingDetail(id);
+        setActiveMeetingDetail(detail);
+        setView("detail");
+      } catch {
+        toast({ title: t("meeting.loadFailed"), tone: "error" });
+      } finally {
+        setDetailLoading(false);
+      }
+    },
+    [t, toast],
+  );
+
+  const handleDeleteMeeting = async (id: string) => {
+    await deleteMeeting(id);
+    setMeetings((current) => current.filter((meeting) => meeting.id !== id));
+    if (selectedMeetingId === id) {
+      setSelectedMeetingId(null);
+      setActiveMeetingDetail(null);
+      setView("meetings");
     }
+    void loadPendingProposals();
   };
 
-  // Load demo meeting directly
-  const handleLoadDemoMeeting = async () => {
-    setIsLoading(true);
+  const handleLoadDemo = async () => {
     try {
       const created = await createMeeting({
-        title: "اجتماع تسعير الباقات وسبرنت الـ Agent (Demo)",
+        title: t("dashboard.demoMeetingTitle"),
         language: "mixed",
       });
       const processed = await processDemoMeeting(created.id);
       setActiveMeetingDetail(processed);
       setSelectedMeetingId(processed.id);
-      setCurrentView("detail");
-      void loadMeetings();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "فشل تحميل الاجتماع التجريبي");
-    } finally {
-      setIsLoading(false);
+      setMeetingTab("summary");
+      setView("detail");
+      await loadMeetings();
+      toast({ title: t("dashboard.demoLoaded"), tone: "success" });
+    } catch {
+      toast({ title: t("dashboard.demoFailed"), tone: "error" });
     }
   };
 
-  const handleSearchResultClick = (citation: SearchCitation) => {
-    void handleSelectMeeting(citation.meetingId);
+  const handleNewMeetingClick = () => {
+    setInitialMeetingTitle("");
+    setNewMeetingOpen(true);
+  };
+
+  const handleNavigate = (next: AppView) => {
+    setView(next);
+    if (next === "meetings") {
+      setSelectedMeetingId(null);
+      setActiveMeetingDetail(null);
+      void loadMeetings();
+    }
+  };
+
+  const onSearchResult = (citation: SearchCitation) => {
+    void openMeeting(citation.meetingId);
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500/20 selection:text-cyan-200">
-      {/* Top Navbar */}
-      <Navbar
-        healthStatus={healthStatus}
-        uptime={uptime}
-        currentView={currentView}
-        pendingProposalsCount={pendingProposalsCount}
-        onNavigate={(view) => {
-          setCurrentView(view);
-          if (view === "list") setSelectedMeetingId(null);
-        }}
-        onNewMeetingClick={() => {
-          setInitialMeetingTitle("");
-          setIsNewMeetingOpen(true);
-        }}
-        onHomeClick={() => {
-          setCurrentView("list");
-          setSelectedMeetingId(null);
-          void loadMeetings();
-        }}
-        onSearchClick={() => setIsSearchOpen(true)}
-      />
-
-      {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full flex flex-col">
-        {currentView === "detail" && activeMeetingDetail ? (
-          <MeetingDetail
-            meeting={activeMeetingDetail}
-            onBack={() => {
-              setCurrentView("list");
-              setSelectedMeetingId(null);
-              void loadMeetings();
-            }}
-            onMeetingUpdated={(updated) => {
-              setActiveMeetingDetail(updated);
-              setMeetings((prev) =>
-                prev.map((m) => (m.id === updated.id ? { ...m, ...updated } : m)),
-              );
-            }}
-          />
-        ) : currentView === "calendar" ? (
+    <AppShell
+      view={view === "detail" ? "meetings" : view}
+      pendingProposals={pendingProposalsCount}
+      health={healthStatus}
+      theme={theme}
+      language={language}
+      onNavigate={handleNavigate}
+      onNewMeeting={handleNewMeetingClick}
+      onOpenSearch={() => setSearchOpen(true)}
+      onToggleTheme={toggleTheme}
+      onChangeLanguage={(next) => setLanguage(next)}
+    >
+      <div key={view} className="animate-page">
+        {view === "detail" ? (
+          detailLoading || !activeMeetingDetail ? (
+            <div className="space-y-4">
+              <Skeleton className="h-6 w-32" />
+              <Skeleton className="h-16 w-3/4" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-64 w-full rounded-card" />
+            </div>
+          ) : (
+            <MeetingDetail
+              key={`${activeMeetingDetail.id}-${meetingTab}`}
+              meeting={activeMeetingDetail}
+              initialTab={meetingTab}
+              onBack={() => {
+                setView("meetings");
+                setSelectedMeetingId(null);
+                setActiveMeetingDetail(null);
+                void loadMeetings();
+              }}
+              onMeetingUpdated={(updated) => {
+                setActiveMeetingDetail(updated);
+                setMeetings((current) =>
+                  current.map((meeting) =>
+                    meeting.id === updated.id
+                      ? {
+                          ...meeting,
+                          title: updated.title,
+                          status: updated.status,
+                          _count: {
+                            tasks: updated.tasks.length,
+                            decisions: updated.decisions.length,
+                            transcriptSegments: updated.transcriptSegments.length,
+                          },
+                        }
+                      : meeting,
+                  ),
+                );
+              }}
+            />
+          )
+        ) : view === "calendar" ? (
           <CalendarView
             onStartRecordingForMeeting={(title) => {
               setInitialMeetingTitle(title);
-              setIsNewMeetingOpen(true);
+              setNewMeetingOpen(true);
             }}
-            onOpenMeetingDetail={handleSelectMeeting}
+            onOpenMeetingDetail={(id) => void openMeeting(id)}
           />
-        ) : currentView === "proposals" ? (
+        ) : view === "proposals" ? (
           <ProposalsInbox
             onProposalsCountChange={setPendingProposalsCount}
-            onNavigateToCalendar={() => setCurrentView("calendar")}
+            onNavigateToCalendar={() => setView("calendar")}
           />
-        ) : currentView === "chat" ? (
-          <div className="h-[750px] w-full flex flex-col">
+        ) : view === "chat" ? (
+          <div className="min-h-[540px]">
             <AskChat
-              onCitationClick={handleSearchResultClick}
-              onProposalApproved={() => {
-                setPendingProposalsCount((prev) => Math.max(0, prev - 1));
-              }}
+              className="h-[calc(100dvh-13rem)] min-h-[540px]"
+              onCitationClick={onSearchResult}
+              onProposalApproved={() => void loadPendingProposals()}
             />
           </div>
-        ) : currentView === "billing" ? (
+        ) : view === "billing" ? (
           <BillingView />
-        ) : currentView === "settings" ? (
+        ) : view === "settings" ? (
           <SettingsView />
         ) : (
           <MeetingsList
             meetings={meetings}
             isLoading={isLoading}
             error={error}
-            onSelectMeeting={handleSelectMeeting}
+            pendingProposals={pendingProposalsCount}
+            onSelectMeeting={(id) => void openMeeting(id)}
             onDeleteMeeting={handleDeleteMeeting}
-            onNewMeetingClick={() => {
-              setInitialMeetingTitle("");
-              setIsNewMeetingOpen(true);
-            }}
-            onLoadDemoClick={handleLoadDemoMeeting}
+            onNewMeetingClick={handleNewMeetingClick}
+            onLoadDemoClick={handleLoadDemo}
             onRetry={loadMeetings}
+            onOpenProposals={() => setView("proposals")}
           />
         )}
-      </main>
+      </div>
 
-      {/* Global Search Modal */}
       <SearchModal
-        isOpen={isSearchOpen}
-        onClose={() => setIsSearchOpen(false)}
-        onSelectResult={handleSearchResultClick}
+        isOpen={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onSelectResult={onSearchResult}
       />
 
-      {/* New Meeting Modal */}
       <NewMeetingModal
-        isOpen={isNewMeetingOpen}
+        isOpen={newMeetingOpen}
         initialTitle={initialMeetingTitle}
         onClose={() => {
-          setIsNewMeetingOpen(false);
+          setNewMeetingOpen(false);
           setInitialMeetingTitle("");
         }}
-        onMeetingCreated={(createdMeeting) => {
-          setActiveMeetingDetail(createdMeeting);
-          setSelectedMeetingId(createdMeeting.id);
-          setCurrentView("detail");
+        onMeetingCreated={(created) => {
+          setActiveMeetingDetail(created);
+          setSelectedMeetingId(created.id);
+          setMeetingTab("summary");
+          setView("detail");
           void loadMeetings();
         }}
       />
-
-      {/* Footer */}
-      <footer className="border-t border-slate-800/80 py-6 text-center text-xs text-slate-500">
-        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div>
-            دوّن (Dawwen) — المساعد الذكي للاجتماعات • المرحلة السادسة (Billing & Settings)
-          </div>
-          <div className="text-[11px] text-slate-500">
-            RTL-First • Egyptian Arabic & English Code-Switching • Human-In-The-Loop • Pay-As-You-Go
-          </div>
-        </div>
-      </footer>
-    </div>
+    </AppShell>
   );
 }

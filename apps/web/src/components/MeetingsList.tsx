@@ -1,273 +1,364 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Search,
-  Plus,
-  Sparkles,
-  Calendar,
-  Clock,
-  CheckCircle2,
-  Trash2,
   AlertCircle,
-  ChevronRight,
   ChevronLeft,
+  Loader2,
+  Plus,
+  Search,
+  ShieldCheck,
+  Sparkles,
+  Trash2,
 } from "lucide-react";
 import type { MeetingSummary } from "../types";
 import { StatsCards } from "./StatsCards";
+import { MeetingStatusBadge } from "./StatusBadges";
+import {
+  Button,
+  Card,
+  ConfirmDialog,
+  EmptyState,
+  IconButton,
+  Input,
+  Segmented,
+  Skeleton,
+  useToast,
+} from "./ui";
+import { clockFromSeconds, formatDate, formatNumber } from "../lib/format";
+import { cn } from "../lib/cn";
+
+type StatusFilter = "ALL" | "review" | "approved" | "processing" | "failed";
 
 interface MeetingsListProps {
   meetings: MeetingSummary[];
   isLoading: boolean;
   error: string | null;
+  pendingProposals?: number;
   onSelectMeeting: (id: string) => void;
   onDeleteMeeting: (id: string) => void;
   onNewMeetingClick: () => void;
   onLoadDemoClick: () => void;
   onRetry: () => void;
+  onOpenProposals?: () => void;
+  demoLoading?: boolean;
+}
+
+function matchesFilter(meeting: MeetingSummary, filter: StatusFilter): boolean {
+  if (filter === "ALL") return true;
+  if (filter === "review") return meeting.status === "REVIEW_PENDING";
+  if (filter === "approved") return meeting.status === "APPROVED";
+  if (filter === "failed") return meeting.status === "FAILED";
+  return ["UPLOADED", "QUEUED", "TRANSCRIBING", "ANALYZING"].includes(meeting.status);
 }
 
 export function MeetingsList({
   meetings,
   isLoading,
   error,
+  pendingProposals = 0,
   onSelectMeeting,
   onDeleteMeeting,
   onNewMeetingClick,
   onLoadDemoClick,
   onRetry,
+  onOpenProposals,
+  demoLoading = false,
 }: MeetingsListProps) {
   const { t, i18n } = useTranslation();
-  const isRtl = i18n.dir() === "rtl";
+  const lang = i18n.language;
+  const { toast } = useToast();
 
   const [searchTerm, setSearchTerm] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("ALL");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
+  const [pendingDelete, setPendingDelete] = useState<MeetingSummary | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
-  // Filtering
-  const filteredMeetings = meetings.filter((m) => {
-    const matchesSearch =
-      !searchTerm.trim() ||
-      m.title.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesStatus =
-      statusFilter === "ALL" ||
-      (statusFilter === "REVIEW_PENDING" && m.status === "REVIEW_PENDING") ||
-      (statusFilter === "APPROVED" && m.status === "APPROVED") ||
-      (statusFilter === "PROCESSING" &&
-        (m.status === "QUEUED" ||
-          m.status === "TRANSCRIBING" ||
-          m.status === "ANALYZING" ||
-          m.status === "UPLOADED"));
-    return matchesSearch && matchesStatus;
-  });
+  const filtered = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+    return meetings
+      .filter((meeting) => matchesFilter(meeting, statusFilter))
+      .filter((meeting) => (term ? meeting.title.toLowerCase().includes(term) : true))
+      .sort((a, b) => {
+        const aTime = new Date(a.scheduledStart ?? a.createdAt).getTime();
+        const bTime = new Date(b.scheduledStart ?? b.createdAt).getTime();
+        return bTime - aTime;
+      });
+  }, [meetings, searchTerm, statusFilter]);
+
+  const filters: { value: StatusFilter; label: string }[] = [
+    { value: "ALL", label: t("meetings.filterAll") },
+    { value: "review", label: t("meetings.filterReview") },
+    { value: "approved", label: t("meetings.filterApproved") },
+    { value: "processing", label: t("meetings.filterProcessing") },
+  ];
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    setDeleting(true);
+    try {
+      await Promise.resolve(onDeleteMeeting(pendingDelete.id));
+      toast({ title: t("meetings.deleted"), tone: "success" });
+      setPendingDelete(null);
+    } catch {
+      toast({ title: t("errors.generic"), tone: "error" });
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   return (
-    <div className="flex flex-col gap-8 animate-in fade-in duration-200">
-      {/* 1. KPI Stats Summary */}
+    <div className="space-y-5">
+      <header>
+        <h1 className="text-xl font-semibold sm:text-2xl">{t("meetings.title")}</h1>
+        <p className="mt-1 max-w-xl text-xs leading-relaxed text-fg-muted sm:text-sm">
+          {t("meetings.subtitle")}
+        </p>
+      </header>
+
       <StatsCards meetings={meetings} />
 
-      {/* 2. Controls & Search Toolbar */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 p-4 rounded-2xl border border-slate-800 bg-slate-900/60 backdrop-blur">
-        {/* Search */}
-        <div className="relative flex-1">
-          <Search className="w-4 h-4 absolute top-3 start-3.5 text-slate-400" />
-          <input
-            type="text"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder={t("meetings.searchPlaceholder")}
-            className="w-full ps-10 pe-4 py-2 rounded-xl border border-slate-800 bg-slate-950/80 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-cyan-500 transition"
-            dir="auto"
-          />
-        </div>
-
-        {/* Filter Chips */}
-        <div className="flex items-center gap-1.5 overflow-x-auto text-xs font-semibold p-1 rounded-xl bg-slate-950/80 border border-slate-800">
-          <button
-            onClick={() => setStatusFilter("ALL")}
-            className={`px-3 py-1.5 rounded-lg transition whitespace-nowrap cursor-pointer ${
-              statusFilter === "ALL"
-                ? "bg-cyan-600 text-white shadow-sm font-bold"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
+      {pendingProposals > 0 ? (
+        <Card className="flex flex-col gap-3 border-warning/25 bg-warning/[0.04] p-4 sm:flex-row sm:items-center">
+          <span
+            aria-hidden
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-warning/15 text-warning"
           >
-            {t("meetings.filterAll")}
-          </button>
-          <button
-            onClick={() => setStatusFilter("REVIEW_PENDING")}
-            className={`px-3 py-1.5 rounded-lg transition whitespace-nowrap cursor-pointer ${
-              statusFilter === "REVIEW_PENDING"
-                ? "bg-cyan-600 text-white shadow-sm font-bold"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            {t("meetings.filterReviewPending")}
-          </button>
-          <button
-            onClick={() => setStatusFilter("APPROVED")}
-            className={`px-3 py-1.5 rounded-lg transition whitespace-nowrap cursor-pointer ${
-              statusFilter === "APPROVED"
-                ? "bg-cyan-600 text-white shadow-sm font-bold"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            {t("meetings.filterApproved")}
-          </button>
-        </div>
-      </div>
-
-      {/* 3. Loading Skeleton State */}
-      {isLoading && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {[1, 2, 3, 4].map((i) => (
-            <div
-              key={i}
-              className="p-6 rounded-2xl border border-slate-800 bg-slate-900/40 animate-pulse flex flex-col gap-4"
-            >
-              <div className="h-4 bg-slate-800 rounded w-1/4"></div>
-              <div className="h-6 bg-slate-800 rounded w-3/4"></div>
-              <div className="h-4 bg-slate-800 rounded w-1/2"></div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* 4. Error State */}
-      {!isLoading && error && (
-        <div className="p-6 rounded-2xl border border-rose-500/30 bg-rose-950/20 text-center flex flex-col items-center gap-3">
-          <AlertCircle className="w-8 h-8 text-rose-400" />
-          <h3 className="text-base font-bold text-white">تعذر تحميل قائمة الاجتماعات</h3>
-          <p className="text-xs text-rose-300 max-w-md">{error}</p>
-          <button
-            onClick={onRetry}
-            className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold transition"
-          >
-            إعادة المحاولة
-          </button>
-        </div>
-      )}
-
-      {/* 5. Empty State */}
-      {!isLoading && !error && filteredMeetings.length === 0 && (
-        <div className="p-8 sm:p-12 rounded-3xl border border-slate-800 bg-slate-900/30 text-center flex flex-col items-center gap-4">
-          <div className="w-16 h-16 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400 mb-2">
-            <Calendar className="w-8 h-8" />
+            <ShieldCheck className="h-4 w-4" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium text-fg">
+              {t("dashboard.pendingTitle", { count: pendingProposals })}
+            </p>
+            <p className="mt-0.5 text-xs text-fg-muted">{t("dashboard.pendingBody")}</p>
           </div>
-          <h3 className="text-xl font-extrabold text-white">{t("meetings.emptyTitle")}</h3>
-          <p className="text-sm text-slate-400 max-w-md leading-relaxed" dir="auto">
-            {t("meetings.emptyDesc")}
-          </p>
+          <Button variant="secondary" size="sm" onClick={onOpenProposals}>
+            {t("dashboard.pendingCta")}
+          </Button>
+        </Card>
+      ) : null}
 
-          <div className="flex flex-col sm:flex-row items-center gap-3 mt-2">
-            <button
-              onClick={onNewMeetingClick}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white shadow-lg shadow-cyan-500/20 transition cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>{t("meetings.createFirst")}</span>
-            </button>
-            <button
-              onClick={onLoadDemoClick}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition cursor-pointer"
-            >
-              <Sparkles className="w-4 h-4 text-cyan-400" />
-              <span>{t("meetings.loadDemo")}</span>
-            </button>
+      <Card className="overflow-hidden">
+        <div className="flex flex-col gap-3 border-b border-line p-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="relative w-full sm:max-w-xs">
+            <Search
+              aria-hidden
+              className="pointer-events-none absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-subtle"
+            />
+            <Input
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder={t("meetings.searchPlaceholder")}
+              aria-label={t("meetings.searchPlaceholder")}
+              className="ps-9"
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-2 sm:justify-end">
+            <Segmented
+              options={filters}
+              value={statusFilter}
+              onChange={setStatusFilter}
+              ariaLabel={t("meetings.filterLabel")}
+            />
+            <span className="hidden whitespace-nowrap text-xs text-fg-subtle sm:inline">
+              {t("meetings.resultCount", { value: formatNumber(filtered.length, lang) })}
+            </span>
           </div>
         </div>
-      )}
 
-      {/* 6. Meetings Grid */}
-      {!isLoading && !error && filteredMeetings.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {filteredMeetings.map((m) => (
-            <div
-              key={m.id}
-              onClick={() => onSelectMeeting(m.id)}
-              className="group p-5 rounded-2xl border border-slate-800/80 hover:border-cyan-500/50 bg-slate-900/50 hover:bg-slate-900/80 transition duration-200 cursor-pointer flex flex-col justify-between gap-4 shadow-sm hover:shadow-cyan-500/5"
-            >
-              <div className="flex flex-col gap-2">
-                {/* Status & Language Row */}
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    {m.status === "APPROVED" && (
-                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                        <CheckCircle2 className="w-3 h-3" />
-                        <span>{t("meetings.statusApproved")}</span>
-                      </span>
-                    )}
-                    {m.status === "REVIEW_PENDING" && (
-                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                        <Clock className="w-3 h-3" />
-                        <span>{t("meetings.statusReviewPending")}</span>
-                      </span>
-                    )}
-                    {m.status !== "APPROVED" && m.status !== "REVIEW_PENDING" && (
-                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-slate-800 text-slate-300">
-                        <span>{m.status}</span>
-                      </span>
-                    )}
-
-                    <span className="text-[11px] text-slate-400 font-medium">
-                      {m.language === "mixed"
-                        ? "عربي + English"
-                        : m.language === "ar"
-                          ? "العربية"
-                          : "English"}
-                    </span>
-                  </div>
-
-                  {/* Delete Button */}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (confirm("هل تريد بالتأكيد حذف هذا الاجتماع؟")) {
-                        onDeleteMeeting(m.id);
-                      }
-                    }}
-                    className="p-1 rounded text-slate-500 hover:text-rose-400 hover:bg-slate-800 transition"
-                    title={t("meetings.delete")}
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+        {isLoading ? (
+          <div className="divide-y divide-line">
+            {[0, 1, 2, 3].map((row) => (
+              <div key={row} className="flex items-center gap-3 px-4 py-4">
+                <Skeleton className="h-9 w-9 rounded-lg" />
+                <div className="flex-1 space-y-2">
+                  <Skeleton className="h-3.5 w-2/5" />
+                  <Skeleton className="h-3 w-1/3" />
                 </div>
-
-                {/* Title */}
-                <h3
-                  className="text-base font-bold text-white group-hover:text-cyan-300 transition leading-snug"
-                  dir="auto"
-                >
-                  {m.title}
-                </h3>
               </div>
+            ))}
+          </div>
+        ) : error ? (
+          <div className="p-4">
+            <div className="flex flex-col items-start gap-3 rounded-xl border border-danger/25 bg-danger/5 p-4 sm:flex-row sm:items-center">
+              <AlertCircle aria-hidden className="h-5 w-5 shrink-0 text-danger" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-fg">{t("meetings.errorTitle")}</p>
+                <p className="mt-0.5 text-xs text-fg-muted">{t("meetings.errorBody")}</p>
+              </div>
+              <div className="flex gap-2">
+                <Button size="sm" variant="secondary" onClick={onRetry}>
+                  {t("common.retry")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={onLoadDemoClick}
+                  loading={demoLoading}
+                  icon={<Sparkles className="h-4 w-4" />}
+                >
+                  {t("dashboard.loadDemo")}
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="p-4">
+            <EmptyState
+              icon={<Search />}
+              title={
+                meetings.length === 0 ? t("meetings.emptyTitle") : t("meetings.noMatchesTitle")
+              }
+              description={
+                meetings.length === 0 ? t("meetings.emptyBody") : t("meetings.noMatchesBody")
+              }
+              action={
+                meetings.length === 0 ? (
+                  <div className="flex flex-wrap justify-center gap-2">
+                    <Button
+                      variant="primary"
+                      icon={<Plus className="h-4 w-4" />}
+                      onClick={onNewMeetingClick}
+                    >
+                      {t("nav.newMeeting")}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      icon={<Sparkles className="h-4 w-4" />}
+                      onClick={onLoadDemoClick}
+                      loading={demoLoading}
+                    >
+                      {t("dashboard.loadDemo")}
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setSearchTerm("");
+                      setStatusFilter("ALL");
+                    }}
+                  >
+                    {t("common.clearFilters")}
+                  </Button>
+                )
+              }
+              className="border-0 bg-transparent"
+            />
+          </div>
+        ) : (
+          <ul className="divide-y divide-line">
+            {filtered.map((meeting) => {
+              const when = meeting.scheduledStart ?? meeting.createdAt;
+              return (
+                <li
+                  key={meeting.id}
+                  data-meeting-card
+                  className="group relative transition-colors hover:bg-raised/40 focus-within:bg-raised/40"
+                >
+                  <button
+                    type="button"
+                    onClick={() => onSelectMeeting(meeting.id)}
+                    aria-label={t("meetings.openMeeting", { title: meeting.title })}
+                    className="absolute inset-0 z-0 rounded-none"
+                  />
 
-              {/* Stats Footer */}
-              <div className="flex items-center justify-between text-xs text-slate-400 pt-3 border-t border-slate-800/60">
-                <div className="flex items-center gap-3">
-                  <span className="flex items-center gap-1">
-                    <Calendar className="w-3.5 h-3.5 text-slate-500" />
-                    <span>
-                      {new Date(m.createdAt).toLocaleDateString(
-                        i18n.language === "ar" ? "ar-EG" : "en-US",
+                  <div className="pointer-events-none flex items-start gap-3 py-3.5 pe-20 ps-4">
+                    <span
+                      aria-hidden
+                      className={cn(
+                        "mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-lg",
+                        meeting.status === "APPROVED"
+                          ? "bg-success/10 text-success"
+                          : meeting.status === "FAILED"
+                            ? "bg-danger/10 text-danger"
+                            : "bg-brand/10 text-brand",
+                      )}
+                    >
+                      {meeting.status === "ANALYZING" || meeting.status === "TRANSCRIBING" ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <MeetingGlyph />
                       )}
                     </span>
-                  </span>
 
-                  {m.audioDurationSeconds && (
-                    <span className="flex items-center gap-1">
-                      <Clock className="w-3.5 h-3.5 text-slate-500" />
-                      <span>{Math.ceil(m.audioDurationSeconds / 60)} دقيقة</span>
-                    </span>
-                  )}
-                </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3
+                          className="min-w-0 truncate text-sm font-medium text-fg"
+                          dir="auto"
+                          title={meeting.title}
+                        >
+                          {meeting.title}
+                        </h3>
+                        <MeetingStatusBadge status={meeting.status} />
+                      </div>
 
-                <div className="flex items-center gap-1 text-cyan-400 font-semibold group-hover:translate-x-1 rtl:group-hover:-translate-x-1 transition">
-                  <span>{t("meetings.viewDetails")}</span>
-                  {isRtl ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+                      <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-fg-subtle">
+                        <span className="tabular">{formatDate(when, lang)}</span>
+                        {meeting.audioDurationSeconds ? (
+                          <>
+                            <span aria-hidden>·</span>
+                            <span className="tabular">
+                              {clockFromSeconds(meeting.audioDurationSeconds)}
+                            </span>
+                          </>
+                        ) : null}
+                        <span aria-hidden>·</span>
+                        <span className="tabular">
+                          {t("meetings.metaTasks", { count: meeting._count?.tasks ?? 0 })}
+                        </span>
+                        <span aria-hidden>·</span>
+                        <span className="tabular">
+                          {t("meetings.metaDecisions", { count: meeting._count?.decisions ?? 0 })}
+                        </span>
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="absolute end-3 top-1/2 z-20 flex -translate-y-1/2 items-center gap-1">
+                    <IconButton
+                      label={t("meetings.deleteMeeting")}
+                      icon={<Trash2 className="h-4 w-4" />}
+                      className="opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                      onClick={() => setPendingDelete(meeting)}
+                    />
+                    <ChevronLeft
+                      aria-hidden
+                      className="hidden h-4 w-4 text-fg-subtle sm:block ltr:rotate-180"
+                    />
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Card>
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title={t("meetings.deleteTitle")}
+        description={t("meetings.deleteBody", { title: pendingDelete?.title ?? "" })}
+        confirmLabel={t("common.delete")}
+        loading={deleting}
+        onConfirm={confirmDelete}
+        onClose={() => setPendingDelete(null)}
+      />
     </div>
+  );
+}
+
+function MeetingGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden className="h-4 w-4">
+      <path
+        d="M6 15.5c1.4-3 4.2-7 9.5-8M7.5 17c2-.7 5.6-1.6 8.5-5.2"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+      <circle cx="16.6" cy="6.4" r="1.6" fill="currentColor" />
+    </svg>
   );
 }

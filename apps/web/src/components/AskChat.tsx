@@ -1,20 +1,21 @@
-import React, { useState, useRef, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Send,
-  Sparkles,
   Bot,
-  User as UserIcon,
-  CheckCircle,
-  ExternalLink,
-  Loader2,
-  Calendar,
-  Bell,
-  Mail,
+  Check,
+  Copy,
+  FileText,
   HelpCircle,
+  Send,
+  ShieldCheck,
+  Sparkles,
+  User as UserIcon,
 } from "lucide-react";
-import type { ChatMessage, SearchCitation, Proposal } from "../types";
-import { askAgent, approveProposal } from "../api";
+import type { ChatMessage, Proposal, SearchCitation } from "../types";
+import { approveProposal, askAgent } from "../api";
+import { formatTime } from "../lib/format";
+import { cn } from "../lib/cn";
+import { Badge, Button, Card, useToast } from "./ui";
 
 interface AskChatProps {
   meetingId?: string;
@@ -24,373 +25,359 @@ interface AskChatProps {
   className?: string;
 }
 
-export const AskChat: React.FC<AskChatProps> = ({
+export function AskChat({
   meetingId,
   meetingTitle,
   onCitationClick,
   onProposalApproved,
-  className = "",
-}) => {
-  const { i18n } = useTranslation();
-  const isArabic = i18n.language === "ar";
+  className,
+}: AskChatProps) {
+  const { t, i18n } = useTranslation();
+  const { toast } = useToast();
+  const lang = i18n.language;
 
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: "welcome-msg",
-      role: "assistant",
-      content: isArabic
-        ? meetingTitle
-          ? `أهلاً بك! أنا مساعد دوّن الذكي للاجتماع "${meetingTitle}". يمكنك سؤالي عن أي قرار أو مهمة أو توقيت ورد في الاجتماع، أو طلبي باقتراح موعد أو كتابة مسودة رسالة.`
-          : "أهلاً بك! أنا مساعد دوّن الذكي. يمكنك سؤالي عن أي شيء اتقال في اجتماعاتك السابقة وسأجيبك دائماً مع المصدر والتوقيت الدقيق."
-        : meetingTitle
-          ? `Welcome! I am Dawwen AI Assistant for "${meetingTitle}". Ask me anything discussed, or ask me to propose next meetings, reminders, or draft messages.`
-          : "Welcome! I am Dawwen AI Assistant. Ask me about anything discussed across your recorded meetings.",
-      timestamp: new Date().toLocaleTimeString(isArabic ? "ar-EG" : "en-US", {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-    },
-  ]);
-
-  const [inputQuery, setInputQuery] = useState("");
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [query, setQuery] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [approvingPropId, setApprovingPropId] = useState<string | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+
+  // The greeting is localized, so it is derived rather than stored on mount.
+  useEffect(() => {
+    setMessages([
+      {
+        id: "welcome",
+        role: "assistant",
+        content: meetingTitle
+          ? t("ask.welcomeMeeting", { title: meetingTitle })
+          : t("ask.welcomeGeneral"),
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+  }, [t, meetingTitle]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, isLoading]);
 
-  const handleSend = async (queryToSend?: string) => {
-    const q = (queryToSend || inputQuery).trim();
-    if (!q || isLoading) return;
+  const quickPrompts = [
+    t("ask.chipDecisions"),
+    t("ask.chipOwners"),
+    t("ask.chipFollowUp"),
+    t("ask.chipDraft"),
+    t("ask.chipReminder"),
+  ];
 
-    setInputQuery("");
+  const send = async (raw?: string) => {
+    const text = (raw ?? query).trim();
+    if (!text || isLoading) return;
 
-    const userMsg: ChatMessage = {
-      id: `usr-${Date.now()}`,
+    setQuery("");
+    const userMessage: ChatMessage = {
+      id: `user-${Date.now()}`,
       role: "user",
-      content: q,
-      timestamp: new Date().toLocaleTimeString(isArabic ? "ar-EG" : "en-US", {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
+      content: text,
+      timestamp: new Date().toISOString(),
     };
-
-    setMessages((prev) => [...prev, userMsg]);
+    setMessages((current) => [...current, userMessage]);
     setIsLoading(true);
 
     try {
-      // Build conversation history for API
-      const history = messages.slice(-6).map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
+      const history = messages
+        .filter((message) => message.id !== "welcome")
+        .slice(-6)
+        .map((message) => ({ role: message.role, content: message.content }));
 
-      const response = await askAgent(q, meetingId, history);
-
-      const assistantMsg: ChatMessage = {
-        id: `ai-${Date.now()}`,
-        role: "assistant",
-        content: response.answer,
-        timestamp: new Date().toLocaleTimeString(isArabic ? "ar-EG" : "en-US", {
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-        citations: response.citations,
-        proposals: response.proposalsCreated,
-        drafts: response.draftsCreated,
-        honestUnknown: response.honestUnknown,
-      };
-
-      setMessages((prev) => [...prev, assistantMsg]);
+      const response = await askAgent(text, meetingId, history);
+      setMessages((current) => [
+        ...current,
+        {
+          id: `ai-${Date.now()}`,
+          role: "assistant",
+          content: response.answer,
+          timestamp: new Date().toISOString(),
+          citations: response.citations,
+          proposals: response.proposalsCreated,
+          drafts: response.draftsCreated,
+          honestUnknown: response.honestUnknown,
+        },
+      ]);
     } catch {
-      const errorMsg: ChatMessage = {
-        id: `err-${Date.now()}`,
-        role: "assistant",
-        content: isArabic
-          ? "عذراً، حدث خطأ أثناء معالجة السؤال. يُرجى المحاولة مرة أخرى."
-          : "Sorry, an error occurred while processing your request. Please try again.",
-        timestamp: new Date().toLocaleTimeString(),
-      };
-      setMessages((prev) => [...prev, errorMsg]);
+      setMessages((current) => [
+        ...current,
+        {
+          id: `err-${Date.now()}`,
+          role: "assistant",
+          content: t("ask.errorBody"),
+          timestamp: new Date().toISOString(),
+        },
+      ]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleApproveInline = async (prop: Proposal) => {
-    setApprovingPropId(prop.id);
+  const approve = async (proposal: Proposal) => {
+    setApprovingId(proposal.id);
     try {
-      const result = await approveProposal(prop.id, true);
-      onProposalApproved?.(result.proposal);
-
-      // Update proposal state in messages
-      setMessages((prev) =>
-        prev.map((m) => {
-          if (!m.proposals) return m;
-          return {
-            ...m,
-            proposals: m.proposals.map((p) =>
-              p.id === prop.id ? { ...p, status: "EXECUTED" } : p,
-            ),
-          };
-        }),
+      const result = await approveProposal(proposal.id, true);
+      onProposalApproved?.(result.proposal ?? proposal);
+      setMessages((current) =>
+        current.map((message) =>
+          message.proposals
+            ? {
+                ...message,
+                proposals: message.proposals.map((item) =>
+                  item.id === proposal.id ? { ...item, status: "EXECUTED" } : item,
+                ),
+              }
+            : message,
+        ),
       );
-    } catch (err) {
-      console.error(err);
+      toast({ title: t("proposals.approvedToast"), tone: "success" });
+    } catch {
+      toast({ title: t("errors.generic"), tone: "error" });
     } finally {
-      setApprovingPropId(null);
+      setApprovingId(null);
     }
   };
 
-  const quickChips = isArabic
-    ? [
-        "ما هي القرارات المعتمدة؟",
-        "مين المسؤول عن المهام القادمة؟",
-        "احجز اجتماع متابعة الأسبوع القادم",
-        "اكتب مسودة رسالة للعميل",
-        "فكرني بمراجعة التقرير",
-      ]
-    : [
-        "What decisions were made?",
-        "Who owns upcoming tasks?",
-        "Schedule a follow-up meeting",
-        "Draft email to client",
-        "Remind me to review report",
-      ];
+  const copyText = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast({ title: t("common.copied"), tone: "success" });
+    } catch {
+      toast({ title: t("common.copyFailed"), tone: "error" });
+    }
+  };
 
   return (
-    <div className={`flex flex-col h-full bg-slate-900/60 rounded-2xl border border-slate-800 backdrop-blur-xl overflow-hidden shadow-2xl ${className}`}>
-      {/* Chat Header */}
-      <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-800 bg-slate-900/80">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center text-white shadow-md shadow-cyan-500/20">
-            <Sparkles className="w-4 h-4" />
-          </div>
-          <div>
-            <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
-              <span>{isArabic ? "مساعد دوّن التفاعلي" : "Dawwen AI Chat"}</span>
-              <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
-                {isArabic ? "موثّق بالمصادر" : "Cited Sources"}
-              </span>
-            </h3>
-            <p className="text-[11px] text-slate-400">
-              {isArabic
-                ? "إجابات دقيقة من تفريغ الاجتماعات دون تخمين"
-                : "Honest grounded answers directly from meeting transcripts"}
+    <Card className={cn("flex h-[min(70vh,680px)] flex-col overflow-hidden", className)}>
+      <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span
+            aria-hidden
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand/10 text-brand"
+          >
+            <Sparkles className="h-4 w-4" />
+          </span>
+          <div className="min-w-0">
+            <p className="flex items-center gap-2 text-sm font-semibold text-fg">
+              {t("ask.title")}
+              <Badge tone="brand" icon={<ShieldCheck className="h-3 w-3" />}>
+                {t("ask.citedBadge")}
+              </Badge>
             </p>
+            <p className="truncate text-xs text-fg-subtle">{t("ask.subtitle")}</p>
           </div>
         </div>
       </div>
 
-      {/* Messages List */}
-      <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
-        {messages.map((msg) => {
-          const isUser = msg.role === "user";
+      <div className="flex-1 space-y-4 overflow-y-auto p-4">
+        {messages.map((message) => {
+          const isUser = message.role === "user";
           return (
             <div
-              key={msg.id}
-              className={`flex gap-3 ${isUser ? "flex-row-reverse" : "flex-row"}`}
+              key={message.id}
+              className={cn("flex gap-2.5", isUser ? "flex-row-reverse" : "flex-row")}
             >
-              <div
-                className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 text-xs font-bold ${
-                  isUser
-                    ? "bg-slate-700 text-slate-200"
-                    : "bg-gradient-to-tr from-cyan-600 to-blue-600 text-white shadow-md shadow-cyan-500/20"
-                }`}
+              <span
+                aria-hidden
+                className={cn(
+                  "mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full",
+                  isUser ? "bg-raised text-fg-muted" : "bg-brand/10 text-brand",
+                )}
               >
-                {isUser ? <UserIcon className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
-              </div>
+                {isUser ? <UserIcon className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5" />}
+              </span>
 
-              <div className={`max-w-[85%] space-y-2.5 ${isUser ? "items-end" : "items-start"}`}>
-                {/* Bubble */}
+              <div className={cn("min-w-0 max-w-[88%] space-y-2", isUser && "items-end")}>
                 <div
-                  className={`p-4 rounded-2xl text-xs md:text-sm leading-relaxed whitespace-pre-wrap ${
+                  className={cn(
+                    "whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
                     isUser
-                      ? "bg-gradient-to-r from-cyan-600 to-blue-600 text-white rounded-te-none shadow-md shadow-cyan-600/15"
-                      : "bg-slate-800/90 text-slate-100 border border-slate-700/60 rounded-ts-none"
-                  }`}
+                      ? "rounded-ee-md bg-brand text-brand-fg"
+                      : "rounded-es-md border border-line bg-raised/50 text-fg",
+                  )}
                   dir="auto"
                 >
-                  {msg.content}
-
-                  {/* Honest Unknown Badge */}
-                  {msg.honestUnknown && (
-                    <div className="mt-3 pt-2.5 border-t border-slate-700/60 flex items-center gap-2 text-amber-400 text-xs font-semibold">
-                      <HelpCircle className="w-4 h-4 shrink-0" />
-                      <span>
-                        {isArabic
-                          ? "ضمان الصدق: لم يتم اختلاق أي معلومة لعدم ورودها في التسجيل."
-                          : "Honesty guarantee: No fabrication. Information not found in meeting recording."}
-                      </span>
-                    </div>
-                  )}
+                  {message.content}
                 </div>
 
-                {/* Citations Pills (Invariant 2) */}
-                {msg.citations && msg.citations.length > 0 && (
-                  <div className="flex flex-wrap gap-2 pt-1">
-                    <span className="text-[11px] text-slate-400 font-semibold flex items-center gap-1">
-                      <span>{isArabic ? "المصادر الموثقة:" : "Verified Sources:"}</span>
-                    </span>
-                    {msg.citations.map((c, idx) => (
-                      <button
-                        key={idx}
-                        onClick={() => onCitationClick?.(c)}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-slate-800/80 hover:bg-cyan-950/40 text-cyan-400 hover:text-cyan-300 border border-cyan-500/30 hover:border-cyan-400 transition cursor-pointer shadow-sm"
-                        title={c.text}
+                <p className="px-1 text-[11px] tabular text-fg-subtle">
+                  {formatTime(message.timestamp, lang)}
+                </p>
+
+                {message.honestUnknown ? (
+                  <p className="flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/5 px-2.5 py-2 text-xs text-warning">
+                    <HelpCircle aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    {t("ask.honestUnknown")}
+                  </p>
+                ) : null}
+
+                {message.citations && message.citations.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <p className="text-[11px] font-medium text-fg-subtle">{t("ask.sources")}</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {message.citations.map((citation, index) => (
+                        <button
+                          key={`${message.id}-citation-${index}`}
+                          type="button"
+                          onClick={() => onCitationClick?.(citation)}
+                          className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-brand/25 bg-brand/10 px-2 py-1 text-start text-[11px] text-brand transition-colors hover:bg-brand/15"
+                          title={citation.text}
+                        >
+                          <span className="shrink-0 tabular opacity-80">{citation.timestamp}</span>
+                          <span className="truncate" dir="auto">
+                            {citation.meetingTitle}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {message.proposals && message.proposals.length > 0 ? (
+                  <div className="space-y-2">
+                    {message.proposals.map((proposal) => (
+                      <div
+                        key={proposal.id}
+                        className="rounded-xl border border-line bg-surface p-3"
                       >
-                        <span className="font-mono">{c.timestamp}</span>
-                        <span className="text-slate-400 max-w-[120px] truncate">{c.meetingTitle}</span>
-                        <ExternalLink className="w-3 h-3 opacity-60" />
-                      </button>
+                        <p className="flex items-center gap-1.5 text-xs font-medium text-fg">
+                          <ShieldCheck aria-hidden className="h-3.5 w-3.5 text-warning" />
+                          {t("ask.proposalNeedsApproval")}
+                        </p>
+                        <p className="mt-1 text-xs text-fg-muted" dir="auto">
+                          {String(proposal.payload?.title ?? proposal.actionType)}
+                        </p>
+                        {proposal.status === "PENDING_APPROVAL" ? (
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            className="mt-2"
+                            icon={<Check className="h-3.5 w-3.5" />}
+                            loading={approvingId === proposal.id}
+                            onClick={() => approve(proposal)}
+                          >
+                            {t("proposals.approve")}
+                          </Button>
+                        ) : (
+                          <Badge tone="success" className="mt-2">
+                            {t("proposalStatus.EXECUTED")}
+                          </Badge>
+                        )}
+                      </div>
                     ))}
                   </div>
-                )}
+                ) : null}
 
-                {/* Proposals Card (Hard Invariant 1: human confirmation required) */}
-                {msg.proposals && msg.proposals.length > 0 && (
-                  <div className="space-y-2 pt-1 w-full">
-                    {msg.proposals.map((prop) => {
-                      const isExecuted = prop.status === "EXECUTED";
-                      return (
-                        <div
-                          key={prop.id}
-                          className={`p-3.5 rounded-xl border transition ${
-                            isExecuted
-                              ? "bg-emerald-950/20 border-emerald-500/30 text-emerald-300"
-                              : "bg-slate-800/90 border-cyan-500/30 text-slate-200"
-                          }`}
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-1.5">
-                                {prop.actionType === "SCHEDULE_MEETING" && (
-                                  <Calendar className="w-4 h-4 text-cyan-400" />
-                                )}
-                                {prop.actionType === "SEND_REMINDER" && (
-                                  <Bell className="w-4 h-4 text-amber-400" />
-                                )}
-                                {prop.actionType === "DRAFT_EMAIL" && (
-                                  <Mail className="w-4 h-4 text-blue-400" />
-                                )}
-                                <span className="text-xs font-bold text-white">
-                                  {prop.actionType === "SCHEDULE_MEETING"
-                                    ? isArabic
-                                      ? "مقترح حجز اجتماع"
-                                      : "Meeting Proposal"
-                                    : prop.actionType === "SEND_REMINDER"
-                                      ? isArabic
-                                        ? "مقترح تذكير بالمهام"
-                                        : "Reminder Proposal"
-                                      : isArabic
-                                        ? "مقترح إرسال رسالة"
-                                        : "Email Proposal"}
-                                </span>
-                                <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                                  {isExecuted
-                                    ? isArabic
-                                      ? "تم الاعتماد والتنفيذ"
-                                      : "Executed"
-                                    : isArabic
-                                      ? "بانتظار موافقتك"
-                                      : "Pending Approval"}
-                                </span>
-                              </div>
-                              <p className="text-xs text-slate-300" dir="auto">
-                                {prop.reason || "مقترح جديد من المساعد الذكي"}
-                              </p>
-                            </div>
-
-                            {!isExecuted && (
-                              <button
-                                onClick={() => handleApproveInline(prop)}
-                                disabled={approvingPropId === prop.id}
-                                className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition cursor-pointer disabled:opacity-50"
-                              >
-                                {approvingPropId === prop.id ? (
-                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                ) : (
-                                  <CheckCircle className="w-3.5 h-3.5" />
-                                )}
-                                <span>{isArabic ? "اعتمد ونفّذ" : "Approve & Run"}</span>
-                              </button>
-                            )}
-                          </div>
+                {message.drafts && message.drafts.length > 0 ? (
+                  <div className="space-y-2">
+                    {message.drafts.map((draft) => (
+                      <div key={draft.id} className="rounded-xl border border-line bg-surface p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="flex items-center gap-1.5 text-xs font-medium text-fg">
+                            <FileText aria-hidden className="h-3.5 w-3.5 text-info" />
+                            {draft.subject ?? t("ask.draftFallback")}
+                          </p>
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            aria-label={t("common.copy")}
+                            onClick={() => copyText(draft.body)}
+                          >
+                            <Copy className="h-3.5 w-3.5" />
+                          </Button>
                         </div>
-                      );
-                    })}
+                        <p
+                          className="mt-1 line-clamp-4 whitespace-pre-wrap text-xs leading-relaxed text-fg-muted"
+                          dir="auto"
+                        >
+                          {draft.body}
+                        </p>
+                      </div>
+                    ))}
                   </div>
-                )}
-
-                <div className="text-[10px] text-slate-500 px-1">{msg.timestamp}</div>
+                ) : null}
               </div>
             </div>
           );
         })}
 
-        {isLoading && (
-          <div className="flex gap-3 items-center text-slate-400 text-xs">
-            <div className="w-8 h-8 rounded-full bg-cyan-600/30 text-cyan-400 flex items-center justify-center">
-              <Bot className="w-4 h-4 animate-spin" />
-            </div>
-            <div className="flex items-center gap-2 p-3 rounded-xl bg-slate-800/80 border border-slate-700/50">
-              <Sparkles className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
-              <span>{isArabic ? "جاري البحث في التفريغ وتوثيق المصادر..." : "Searching transcript & verifying sources..."}</span>
-            </div>
+        {isLoading ? (
+          <div className="flex items-center gap-2 text-xs text-fg-subtle">
+            <span
+              aria-hidden
+              className="grid h-7 w-7 place-items-center rounded-full bg-brand/10 text-brand"
+            >
+              <Bot className="h-3.5 w-3.5" />
+            </span>
+            <span className="flex gap-1" aria-label={t("ask.thinking")}>
+              {[0, 1, 2].map((dot) => (
+                <span
+                  key={dot}
+                  className="h-1.5 w-1.5 animate-bounce rounded-full bg-fg-subtle"
+                  style={{ animationDelay: `${dot * 0.12}s` }}
+                />
+              ))}
+            </span>
           </div>
-        )}
+        ) : null}
 
-        <div ref={messagesEndRef} />
+        <div ref={endRef} />
       </div>
 
-      {/* Suggested Prompt Chips */}
-      <div className="px-4 py-2 border-t border-slate-800/60 bg-slate-950/40 flex items-center gap-2 overflow-x-auto text-[11px] no-scrollbar">
-        <span className="text-slate-500 shrink-0 font-medium">{isArabic ? "اقتراحات:" : "Quick:"}</span>
-        {quickChips.map((chip, i) => (
-          <button
-            key={i}
-            onClick={() => handleSend(chip)}
-            disabled={isLoading}
-            className="px-2.5 py-1 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/80 whitespace-nowrap transition cursor-pointer disabled:opacity-50"
-          >
-            {chip}
-          </button>
-        ))}
-      </div>
+      {messages.length <= 1 ? (
+        <div className="hide-scrollbar flex gap-2 overflow-x-auto border-t border-line px-3 py-2">
+          {quickPrompts.map((prompt) => (
+            <button
+              key={prompt}
+              type="button"
+              onClick={() => send(prompt)}
+              className="shrink-0 rounded-full border border-line bg-surface px-3 py-1.5 text-xs text-fg-muted transition-colors hover:border-brand/40 hover:text-brand"
+            >
+              {prompt}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
-      {/* Input Box */}
-      <div className="p-3 border-t border-slate-800 bg-slate-900/90">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void handleSend();
-          }}
-          className="flex items-center gap-2"
-        >
-          <input
-            type="text"
-            value={inputQuery}
-            onChange={(e) => setInputQuery(e.target.value)}
-            placeholder={
-              isArabic
-                ? "اسأل عن أي حاجة اتقالت في الاجتماع، أو اطلب حجز موعد..."
-                : "Ask about what was discussed, or request meeting scheduling..."
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void send();
+        }}
+        className="flex items-end gap-2 border-t border-line p-3"
+      >
+        <label htmlFor="ask-input" className="sr-only">
+          {t("ask.inputLabel")}
+        </label>
+        <textarea
+          id="ask-input"
+          rows={1}
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              void send();
             }
-            disabled={isLoading}
-            className="flex-1 px-4 py-2.5 rounded-xl bg-slate-950/70 border border-slate-700/80 text-white text-xs md:text-sm placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition"
-            dir="auto"
-          />
-          <button
-            type="submit"
-            disabled={!inputQuery.trim() || isLoading}
-            className="p-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white transition disabled:opacity-40 cursor-pointer shadow-lg shadow-cyan-500/20"
-          >
-            <Send className="w-4 h-4 rtl:rotate-180" />
-          </button>
-        </form>
-      </div>
-    </div>
+          }}
+          placeholder={t("ask.placeholder")}
+          dir="auto"
+          className="max-h-32 min-h-10 flex-1 resize-none rounded-xl border border-line bg-surface px-3 py-2.5 text-sm text-fg placeholder:text-fg-subtle transition-colors hover:border-line-strong focus:border-brand focus:outline-none focus:ring-4 focus:ring-brand/15"
+        />
+        <Button
+          type="submit"
+          variant="primary"
+          size="icon"
+          aria-label={t("ask.send")}
+          disabled={!query.trim() || isLoading}
+        >
+          <Send className={cn("h-4 w-4", lang === "ar" && "-scale-x-100")} />
+        </Button>
+      </form>
+    </Card>
   );
-};
+}

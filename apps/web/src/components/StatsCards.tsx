@@ -1,70 +1,81 @@
 import { useTranslation } from "react-i18next";
-import { Calendar, CheckSquare, Clock, AlertTriangle } from "lucide-react";
+import { CalendarCheck2, CheckSquare, Clock3, ListChecks } from "lucide-react";
 import type { MeetingSummary } from "../types";
+import { Card } from "./ui";
+import { clockFromSeconds, formatNumber } from "../lib/format";
 
 interface StatsCardsProps {
   meetings: MeetingSummary[];
 }
 
 export function StatsCards({ meetings }: StatsCardsProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const lang = i18n.language;
 
-  const totalMeetings = meetings.length;
-  const pendingReview = meetings.filter(
-    (m) => m.status === "REVIEW_PENDING" || m.status === "QUEUED" || m.status === "ANALYZING",
+  const total = meetings.length;
+  const pendingReview = meetings.filter((meeting) =>
+    ["UPLOADED", "QUEUED", "TRANSCRIBING", "ANALYZING", "REVIEW_PENDING"].includes(meeting.status),
   ).length;
-  const totalDecisions = meetings.reduce((acc, m) => acc + (m._count?.decisions ?? 0), 0);
-  const totalDurationSeconds = meetings.reduce((acc, m) => acc + (m.audioDurationSeconds ?? 0), 0);
-  // Estimated post-meeting time saved: approx 2.5x the recording duration
-  const timeSavedHours = ((totalDurationSeconds * 2.5) / 3600).toFixed(1);
+  const approved = meetings.filter((meeting) => meeting.status === "APPROVED").length;
+  const decisions = meetings.reduce((sum, meeting) => sum + (meeting._count?.decisions ?? 0), 0);
+  const tasks = meetings.reduce((sum, meeting) => sum + (meeting._count?.tasks ?? 0), 0);
+  const recordedSeconds = meetings.reduce(
+    (sum, meeting) => sum + (meeting.audioDurationSeconds ?? 0),
+    0,
+  );
+
+  const items = [
+    {
+      key: "meetings",
+      icon: <CalendarCheck2 />,
+      label: t("stats.meetings"),
+      value: formatNumber(total, lang),
+      hint: t("stats.meetingsHint", { approved: formatNumber(approved, lang) }),
+      tone: "text-brand bg-brand/10",
+    },
+    {
+      key: "review",
+      icon: <Clock3 />,
+      label: t("stats.needsReview"),
+      value: formatNumber(pendingReview, lang),
+      hint: t("stats.needsReviewHint"),
+      tone: "text-warning bg-warning/10",
+    },
+    {
+      key: "decisions",
+      icon: <ListChecks />,
+      label: t("stats.decisions"),
+      value: formatNumber(decisions, lang),
+      hint: t("stats.decisionsHint"),
+      tone: "text-info bg-info/10",
+    },
+    {
+      key: "tasks",
+      icon: <CheckSquare />,
+      label: t("stats.tasks"),
+      value: formatNumber(tasks, lang),
+      hint: t("stats.tasksHint", { duration: clockFromSeconds(recordedSeconds) }),
+      tone: "text-success bg-success/10",
+    },
+  ];
 
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-      {/* 1. Total Meetings */}
-      <div className="p-4 sm:p-5 rounded-2xl border border-slate-800 bg-slate-900/60 backdrop-blur flex items-center justify-between">
-        <div>
-          <div className="text-xs font-medium text-slate-400 mb-1">{t("stats.totalMeetings")}</div>
-          <div className="text-2xl sm:text-3xl font-extrabold text-white">{totalMeetings}</div>
-        </div>
-        <div className="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-between p-2.5 text-cyan-400">
-          <Calendar className="w-full h-full" />
-        </div>
-      </div>
-
-      {/* 2. Pending Review */}
-      <div className="p-4 sm:p-5 rounded-2xl border border-slate-800 bg-slate-900/60 backdrop-blur flex items-center justify-between">
-        <div>
-          <div className="text-xs font-medium text-slate-400 mb-1">{t("stats.pendingReview")}</div>
-          <div className="text-2xl sm:text-3xl font-extrabold text-amber-400">{pendingReview}</div>
-        </div>
-        <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-between p-2.5 text-amber-400">
-          <AlertTriangle className="w-full h-full" />
-        </div>
-      </div>
-
-      {/* 3. Documented Decisions */}
-      <div className="p-4 sm:p-5 rounded-2xl border border-slate-800 bg-slate-900/60 backdrop-blur flex items-center justify-between">
-        <div>
-          <div className="text-xs font-medium text-slate-400 mb-1">{t("stats.decisionsMade")}</div>
-          <div className="text-2xl sm:text-3xl font-extrabold text-emerald-400">{totalDecisions}</div>
-        </div>
-        <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-between p-2.5 text-emerald-400">
-          <CheckSquare className="w-full h-full" />
-        </div>
-      </div>
-
-      {/* 4. Time Saved */}
-      <div className="p-4 sm:p-5 rounded-2xl border border-slate-800 bg-slate-900/60 backdrop-blur flex items-center justify-between">
-        <div>
-          <div className="text-xs font-medium text-slate-400 mb-1">{t("stats.timeSaved")}</div>
-          <div className="text-2xl sm:text-3xl font-extrabold text-indigo-400">
-            {timeSavedHours} <span className="text-xs font-normal text-slate-400">{t("stats.hours")}</span>
+    <section aria-label={t("stats.sectionLabel")} className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      {items.map((item) => (
+        <Card key={item.key} className="p-4">
+          <div className="flex items-start justify-between gap-2">
+            <p className="text-xs font-medium text-fg-muted">{item.label}</p>
+            <span
+              aria-hidden
+              className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg ${item.tone} [&>svg]:h-4 [&>svg]:w-4`}
+            >
+              {item.icon}
+            </span>
           </div>
-        </div>
-        <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-between p-2.5 text-indigo-400">
-          <Clock className="w-full h-full" />
-        </div>
-      </div>
-    </div>
+          <p className="mt-2 text-2xl font-semibold tabular text-fg">{item.value}</p>
+          <p className="mt-1 text-[11px] leading-relaxed text-fg-subtle">{item.hint}</p>
+        </Card>
+      ))}
+    </section>
   );
 }
