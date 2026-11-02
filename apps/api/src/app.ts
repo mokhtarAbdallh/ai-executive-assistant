@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import cookie from "@fastify/cookie";
+import { S3Client } from "@aws-sdk/client-s3";
 import { API_PREFIX } from "@dawwen/shared";
 import type {
   PrismaClient} from "@dawwen/db";
@@ -76,9 +77,14 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     localAuthProvider =
       opts.localAuthProvider ?? new LocalAuthProvider(prisma, appSecret);
   } else if (process.env.AUTH_PROVIDER === "cognito") {
+    if (!process.env.COGNITO_USER_POOL_ID) {
+      throw new Error(
+        "COGNITO_USER_POOL_ID is required when AUTH_PROVIDER=cognito (no mock pool fallback)",
+      );
+    }
     authProvider = new CognitoAuthProvider({
       region: process.env.AWS_REGION ?? "eu-central-1",
-      userPoolId: process.env.COGNITO_USER_POOL_ID ?? "mock-pool",
+      userPoolId: process.env.COGNITO_USER_POOL_ID,
       clientId: process.env.COGNITO_CLIENT_ID,
     });
     localAuthProvider = new LocalAuthProvider(prisma, appSecret);
@@ -135,6 +141,14 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     meetingRepository,
   );
 
+  // One shared S3 client so uploads, deletion and audio cleanup target the same bucket (ADR-017).
+  const s3Client = new S3Client({
+    region: process.env.AWS_REGION || "eu-central-1",
+    endpoint: process.env.AWS_ENDPOINT_URL,
+    forcePathStyle: !!process.env.AWS_ENDPOINT_URL, // needed for LocalStack
+  });
+  const audioBucket = process.env.AUDIO_BUCKET;
+
   const paymentProvider =
     opts.paymentProvider ?? new ManualPaymentAdapter(creditRepository);
   const dataManagementService =
@@ -142,6 +156,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     new DataManagementService({
       prisma,
       meetingRepository,
+      s3Client,
+      bucketName: audioBucket,
     });
 
   // Invariant 6: every route lives under /api (the ALB only forwards /api/* to this service).
@@ -163,6 +179,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         consentRepository,
         creditRepository,
         prisma,
+        s3Client,
+        bucketName: audioBucket,
       });
       await api.register(meetingsRoutes, {
         meetingRepository,

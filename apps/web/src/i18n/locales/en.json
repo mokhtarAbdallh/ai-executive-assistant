@@ -172,6 +172,8 @@
     "recordingActive": "Recording…",
     "startRecording": "Start recording",
     "stopRecording": "Stop recording",
+    "recordedReady": "Recording ready ({{seconds}}). Press process to continue.",
+    "processingFailed": "Processing failed. Check the audio quality and try again.",
     "dropzoneText": "Drop an audio file here, or click to browse",
     "supportedFormats": "MP3, WAV, M4A, WEBM, OGG",
     "fileSize": "Size: {{size}} MB",

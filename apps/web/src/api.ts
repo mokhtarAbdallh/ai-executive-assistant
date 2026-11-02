@@ -324,7 +324,7 @@ export async function ensureAuth(): Promise<string> {
     const loginRes = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: "demo@dawwen.ai", password: "Password123!" }),
+      body: JSON.stringify({ email: "demo@dawwen.ai", password: "DawwenDemo2026!" }),
     });
 
     if (loginRes.ok) {
@@ -556,6 +556,74 @@ export async function processDemoMeeting(meetingId: string): Promise<MeetingDeta
     return found;
   }
   return DEMO_MEETINGS_STORE[0]!;
+}
+
+/**
+ * Real audio upload flow (ADR-018): presigned PUT directly to S3, never through the API.
+ * Throws on API/S3 failure — callers may fall back to the demo flow in dev/demo mode.
+ */
+export async function uploadMeetingAudio(
+  meetingId: string,
+  file: File,
+  consentConfirmed: boolean,
+): Promise<void> {
+  const contentType = file.type || "audio/webm";
+  const fileName = file.name || "recording.webm";
+
+  const res = await authFetch(`/api/meetings/${meetingId}/upload-url`, {
+    method: "POST",
+    body: JSON.stringify({
+      fileName,
+      fileSizeBytes: file.size,
+      contentType,
+      consentConfirmed,
+    }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error || `Upload-url failed (HTTP ${res.status})`);
+  }
+
+  const { uploadUrl } = (await res.json()) as { uploadUrl: string };
+  const put = await fetch(uploadUrl, {
+    method: "PUT",
+    body: file,
+    headers: { "Content-Type": contentType },
+  });
+  if (!put.ok) {
+    throw new Error(`Audio upload failed (HTTP ${put.status})`);
+  }
+}
+
+/** Fetches a meeting detail with NO demo fallback (throws on failure). */
+async function fetchMeetingDetailStrict(id: string): Promise<MeetingDetail> {
+  const res = await authFetch(`/api/meetings/${id}`);
+  if (!res.ok) {
+    throw new Error(`Meeting fetch failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as MeetingDetail;
+}
+
+/**
+ * Polls the real API until the pipeline settles (ADR-018).
+ * Resolves when status is REVIEW_PENDING / APPROVED / FAILED, or times out.
+ */
+export async function pollMeetingProcessing(
+  meetingId: string,
+  onTick?: (status: string) => void,
+  timeoutMs = 15 * 60_000,
+): Promise<MeetingDetail> {
+  const deadline = Date.now() + timeoutMs;
+  const terminal = new Set(["REVIEW_PENDING", "APPROVED", "FAILED"]);
+
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 4000));
+    const meeting = await fetchMeetingDetailStrict(meetingId);
+    onTick?.(meeting.status);
+    if (terminal.has(meeting.status)) return meeting;
+  }
+
+  return await fetchMeetingDetailStrict(meetingId);
 }
 
 export async function requestUploadUrl(

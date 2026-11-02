@@ -301,7 +301,10 @@ export async function meetingsRoutes(
     },
   );
 
-  // 9. Offline Demo Trigger: immediate in-memory processing with Fake ASR & Fake LLM
+  // 9. Offline Demo Trigger: immediate in-memory processing with Fake ASR & Fake LLM.
+  // Registered ONLY outside production (or explicitly in DEMO_MODE) so a real
+  // deployment never exposes mock processing (ADR-018).
+  if (process.env.NODE_ENV !== "production" || process.env.DEMO_MODE === "true") {
   fastify.post(
     "/meetings/:id/process-demo",
     { preHandler: [fastify.authenticate] },
@@ -483,6 +486,7 @@ export async function meetingsRoutes(
       return reply.send(fullDetails || finalMeeting);
     },
   );
+  }
 }
 
 

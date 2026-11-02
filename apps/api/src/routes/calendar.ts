@@ -55,7 +55,10 @@ export async function calendarRoutes(
       const state = Buffer.from(JSON.stringify({ userId: user.id, timestamp: Date.now() })).toString(
         "base64",
       );
-      const redirectUri = `${request.protocol}://${request.hostname}/api/calendar/callback`;
+      // Behind an ALB the request hostname may be an internal DNS name; PUBLIC_BASE_URL
+      // (when set) is the canonical https origin for OAuth redirects (ADR-017).
+      const baseUrl = process.env.PUBLIC_BASE_URL || `${request.protocol}://${request.hostname}`;
+      const redirectUri = `${baseUrl}/api/calendar/callback`;
       const authUrl = calendarProvider.getAuthUrl(state, redirectUri);
       return reply.send({ authUrl });
     },
@@ -77,8 +80,9 @@ export async function calendarRoutes(
         return reply.status(400).send({ error: "Invalid callback payload", details: parsed.error.format() });
       }
 
+      const baseUrl = process.env.PUBLIC_BASE_URL || `${request.protocol}://${request.hostname}`;
       const redirectUri =
-        parsed.data.redirectUri || `${request.protocol}://${request.hostname}/api/calendar/callback`;
+        parsed.data.redirectUri || `${baseUrl}/api/calendar/callback`;
 
       const tokens = await calendarProvider.exchangeCode(parsed.data.code, redirectUri);
       const encryptedTokens = await tokenEncryptor.encrypt(tokens);

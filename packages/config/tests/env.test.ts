@@ -81,10 +81,29 @@ describe("loadApiConfig", () => {
 });
 
 describe("loadWorkerConfig", () => {
-  it("requires ASR_API_KEY for real providers", () => {
+  it("requires ASR_API_KEY for keyed providers", () => {
     expect(() => loadWorkerConfig({ ...baseEnv, ASR_PROVIDER: "elevenlabs" })).toThrow(
       /ASR_API_KEY/,
     );
     expect(loadWorkerConfig(baseEnv).asrProvider).toBe("fake");
+  });
+
+  it("requires ASR_HTTP_URL for self-hosted HTTP providers (no API key needed)", () => {
+    expect(() => loadWorkerConfig({ ...baseEnv, ASR_PROVIDER: "qwencleo-http" })).toThrow(
+      /ASR_HTTP_URL/,
+    );
+    const cfg = loadWorkerConfig({
+      ...baseEnv,
+      ASR_PROVIDER: "qwencleo-http",
+      ASR_HTTP_URL: "http://asr.internal:8000",
+    });
+    expect(cfg.asrHttpUrl).toBe("http://asr.internal:8000");
+    expect(cfg.asrApiKey).toBeUndefined();
+  });
+
+  it("requires COGNITO_USER_POOL_ID when AUTH_PROVIDER=cognito", () => {
+    expect(() => loadApiConfig({ ...baseEnv, AUTH_PROVIDER: "cognito" })).toThrow(
+      /COGNITO_USER_POOL_ID/,
+    );
   });
 });

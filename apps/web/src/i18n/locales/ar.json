@@ -172,6 +172,8 @@
     "recordingActive": "جاري التسجيل…",
     "startRecording": "ابدأ التسجيل",
     "stopRecording": "إيقاف التسجيل",
+    "recordedReady": "التسجيل جاهز ({{seconds}}). اضغط إدخال المعالجة.",
+    "processingFailed": "المعالجة وقعت. اتأكد من جودة الصوت وحاول تاني. لو اتفق معاك على مدة أطول جرب تاني بعد شوية.",
     "dropzoneText": "اسحب ملف الصوت هنا أو اضغط للاختيار",
     "supportedFormats": "MP3, WAV, M4A, WEBM, OGG",
     "fileSize": "الحجم: {{size}} ميجابايت",

@@ -17,3 +17,47 @@ single_nat_gateway = true
 # Container sizing / scaling
 worker_min = 1
 worker_max = 5
+
+# ---- Required (ADR-009): no sane defaults without these ----
+# Bedrock model for meeting analysis / chat (verify availability in your region).
+bedrock_model_id = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+# Titan Embeddings v2 (1024-dim) for semantic search. Change embedding_dim if you switch models.
+bedrock_embedding_model_id = "amazon.titan-embed-text-v2:0"
+embedding_dim              = 1024
+
+llm_provider = "bedrock"
+auth_provider = "local"
+
+# ---- ASR (ADR-005/ADR-018) ----
+# qwencleo-http = self-hosted QwenCleo-ASR server (FastAPI POST /v1/transcribe).
+# elevenlabs    = managed SaaS (requires the asr-api-key secret + costs ~$0.22/audio-hour).
+asr_provider = "qwencleo-http"
+asr_http_url = "" # e.g. https://asr.internal.example.com
+# Only set if your ASR server sits behind an shared key:
+asr_http_api_key = ""
+
+# ---- Pricing (USD micros; 1 USD = 1_000_000) ----
+# Customer price ~$0.03/audio-minute. Provider costs are the real infra costs used
+# for usage_events. Update to your actual bill once measured.
+pricing_config = jsonencode({
+  customerPricePerAudioMinuteMicros = 30000
+  providerCosts = {
+    asrPerAudioMinuteMicros = {
+      qwencleo-http = 1200   # ~$0.07 per 60-min meeting on a scale-to-zero g5.xlarge
+      elevenlabs    = 183333 # ~$11/hour of audio
+      fake          = 0
+    }
+    llmPerMillionInputTokensMicros  = { bedrock = 3000000, fake = 0 }  # $3 / 1M input
+    llmPerMillionOutputTokensMicros = { bedrock = 15000000, fake = 0 } # $15 / 1M output
+    embeddingsPerMillionTokensMicros = { bedrock = 20000, fake = 0 }   # $0.02 / 1M
+  }
+  lowBalanceThresholdMicros = 1000000
+})
+
+demo_mode    = false
+
+# Canonical HTTPS origin used for OAuth redirects (Google Calendar callback).
+public_base_url = "" # e.g. https://app.example.com
+
+# Verified SES identity for reminder emails (optional; console channel when empty).
+email_from = ""

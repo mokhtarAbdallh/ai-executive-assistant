@@ -52,7 +52,7 @@ export async function uploadRoutes(
   const { meetingRepository, consentRepository } = options;
   const bucketName =
     options.bucketName ||
-    process.env.AUDIO_BUCKET_NAME ||
+    process.env.AUDIO_BUCKET ||
     "meeting-assistant-audio";
 
   const s3Client =
