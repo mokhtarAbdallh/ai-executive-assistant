@@ -1,5 +1,6 @@
 import { FakeSpeechToText } from "./adapters/fake.js";
 import { ElevenLabsSpeechToText, type ElevenLabsConfig } from "./adapters/elevenlabs.js";
+import { QwenCleoHttpSpeechToText, type QwenCleoHttpConfig } from "./adapters/qwencleo.js";
 import {
   SpeechmaticsSpeechToText,
   WhisperSpeechToText,
@@ -10,6 +11,7 @@ import type { SpeechToText } from "./types.js";
 export interface CreateAsrOptions {
   provider?: string;
   elevenlabs?: ElevenLabsConfig;
+  http?: QwenCleoHttpConfig;
 }
 
 export function createSpeechToText(options?: CreateAsrOptions): SpeechToText {
@@ -22,6 +24,11 @@ export function createSpeechToText(options?: CreateAsrOptions): SpeechToText {
     }
     case "speechmatics":
       return new SpeechmaticsSpeechToText();
+    case "qwencleo-http":
+      return new QwenCleoHttpSpeechToText({
+        baseUrl: options?.http?.baseUrl || process.env.ASR_HTTP_URL || "",
+        apiKey: options?.http?.apiKey || process.env.ASR_HTTP_API_KEY,
+      });
     case "whisper-http":
     case "whisper":
       return new WhisperSpeechToText();

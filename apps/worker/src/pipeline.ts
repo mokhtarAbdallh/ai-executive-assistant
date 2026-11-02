@@ -7,7 +7,7 @@ import {
   ProposalStatus,
   ProposalActionType,
 } from "@dawwen/db";
-import type { SpeechToText } from "@dawwen/asr";
+import type { SpeechToText, TranscribeOptions, TranscriptChunk } from "@dawwen/asr";
 import { standardizeArabicTerms } from "@dawwen/asr";
 import type { LlmClient, TranscriptContext } from "@dawwen/llm";
 import type { PricingConfig } from "@dawwen/config";
@@ -20,6 +20,16 @@ export interface PipelineDependencies {
   pricingConfig: PricingConfig;
   asrProviderName: string;
   llmProviderName: string;
+  /**
+   * Optional audio preparation (16 kHz mono WAV conversion + timed chunk cutting,
+   * ADR-018). When it yields chunks and the ASR client supports chunked
+   * transcription, per-chunk processing is used so transcript timestamps are real.
+   */
+  prepareAsrAudio?: (input: Buffer) => Promise<{
+    buffer: Buffer;
+    durationSeconds?: number;
+    chunks?: readonly TranscriptChunk[];
+  }>;
   logger?: {
     info: (msg: string, meta?: Record<string, unknown>) => void;
     warn: (msg: string, meta?: Record<string, unknown>) => void;
@@ -173,21 +183,40 @@ export async function processMeetingAudio(
     throw err;
   }
 
-  // 4. ASR Transcription
-  log.info("running speech-to-text", { asrProvider: asrProviderName, bufferSize: audioBuffer.length });
+  // 4. ASR Transcription (with optional audio preparation, ADR-018)
+  const prepare = deps.prepareAsrAudio
+    ? await deps.prepareAsrAudio(audioBuffer)
+    : { buffer: audioBuffer, durationSeconds: undefined, chunks: undefined };
 
-  const asrResult = await asrClient.transcribe(audioBuffer, {
+  const transcribeOptions: TranscribeOptions = {
     language: meeting.language || "ar",
     diarize: true,
+    audioDurationSeconds: prepare.durationSeconds,
+  };
+
+  log.info("running speech-to-text", {
+    asrProvider: asrProviderName,
+    preparedBufferBytes: prepare.buffer.length,
+    preparedChunks: prepare.chunks?.length ?? 0,
   });
 
-  // Compute audio duration (seconds)
+  let asrResult;
+  if (prepare.chunks && prepare.chunks.length > 1 && asrClient.transcribeChunked) {
+    log.info("using chunked transcription for real timestamps", { chunkCount: prepare.chunks.length });
+    asrResult = await asrClient.transcribeChunked(prepare.chunks, transcribeOptions);
+  } else {
+    asrResult = await asrClient.transcribe(prepare.buffer, transcribeOptions);
+  }
+
+  // Prefer the measured duration (ffprobe) over provider-reported values.
   const durationSeconds =
-    asrResult.durationSeconds && asrResult.durationSeconds > 0
-      ? asrResult.durationSeconds
-      : asrResult.segments.length > 0
-        ? Math.ceil(Math.max(...asrResult.segments.map((s) => s.endMs)) / 1000)
-        : 60; // minimum 1 minute
+    prepare.durationSeconds && prepare.durationSeconds > 0
+      ? Math.ceil(prepare.durationSeconds)
+      : asrResult.durationSeconds && asrResult.durationSeconds > 0
+        ? asrResult.durationSeconds
+        : asrResult.segments.length > 0
+          ? Math.ceil(Math.max(...asrResult.segments.map((s) => s.endMs)) / 1000)
+          : 60; // minimum 1 minute
 
   const audioMinutes = Math.max(1, Math.ceil(durationSeconds / 60));
 
