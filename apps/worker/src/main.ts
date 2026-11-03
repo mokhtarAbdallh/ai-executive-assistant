@@ -9,7 +9,7 @@ import {
 } from "@dawwen/config";
 import { getPrismaClient } from "@dawwen/db";
 import { createSpeechToText } from "@dawwen/asr";
-import { createLlmClient } from "@dawwen/llm";
+import { createLlmClient, createEmbeddingClient } from "@dawwen/llm";
 import { prepareAudioForAsr } from "./audio.js";
 import { SqsAudioConsumer } from "./consumer.js";
 
@@ -109,6 +109,20 @@ async function main(): Promise<void> {
     },
   });
 
+  // Semantic search (pgvector) — optional and only when an embedding model is configured
+  // (BedrockEmbeddingClient throws on empty model id, so guard before constructing).
+  const embeddingClient = config.bedrock.embeddingModelId
+    ? createEmbeddingClient({
+        provider: config.llmProvider,
+        bedrock: {
+          region: config.awsRegion,
+          endpointUrl: config.awsEndpointUrl,
+          modelId: config.bedrock.embeddingModelId,
+          dimensions: config.embeddingDim,
+        },
+      })
+    : undefined;
+
   // Free-form knobs for the self-hosted ASR adapter (ASR_HTTP_OPTIONS JSON, ADR-018).
   const asrHttpOptions = parseAsrHttpOptions(config.asrHttpOptionsJson, log);
   const asrClient = createSpeechToText({
@@ -129,6 +143,7 @@ async function main(): Promise<void> {
       s3Client,
       asrClient,
       llmClient,
+      embeddingClient,
       pricingConfig: config.pricing,
       asrProviderName: config.asrProvider,
       llmProviderName: config.llmProvider,

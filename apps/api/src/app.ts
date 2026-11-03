@@ -37,6 +37,7 @@ import { CognitoAuthProvider } from "./auth/cognito.provider.js";
 import { createAuthMiddleware } from "./auth/middleware.js";
 import type { IAuthProvider } from "./auth/types.js";
 import { HkdfKeyProvider, TokenEncryptor } from "@dawwen/shared";
+import type { EmbeddingClient } from "@dawwen/llm";
 import {
   type CalendarProvider,
   FakeCalendarProvider,
@@ -57,6 +58,8 @@ export interface AppOptions {
   calendarProvider?: CalendarProvider;
   paymentProvider?: PaymentProvider;
   dataManagementService?: DataManagementService;
+  /** Optional embedding client for semantic (pgvector) search, ADR-016. */
+  embeddingClient?: EmbeddingClient;
 }
 
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
@@ -131,7 +134,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     taskRepository,
   );
 
-  const searchService = new SearchService(prisma);
+  const searchService = new SearchService(prisma, opts.embeddingClient);
   const agentService = new AgentService(
     searchService,
     taskRepository,

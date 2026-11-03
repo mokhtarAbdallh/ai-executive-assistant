@@ -27,3 +27,10 @@ export interface LlmClient {
   readonly providerName: string;
   analyzeMeeting(context: TranscriptContext): Promise<LlmAnalysisResult>;
 }
+
+/** Text embedding contract used by semantic search (pgvector). */
+export interface EmbeddingClient {
+  readonly providerName: string;
+  /** Embeds a batch of texts; mirrors input order. */
+  embed(texts: readonly string[]): Promise<number[][]>;
+}

@@ -1,6 +1,7 @@
 import type { S3Client } from "@aws-sdk/client-s3";
 import { GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import type { PrismaClient } from "@dawwen/db";
+import { saveSegmentEmbedding } from "@dawwen/db";
 import {
   MeetingStatus,
   Priority,
@@ -9,7 +10,7 @@ import {
 } from "@dawwen/db";
 import type { SpeechToText, TranscribeOptions, TranscriptChunk } from "@dawwen/asr";
 import { standardizeArabicTerms } from "@dawwen/asr";
-import type { LlmClient, TranscriptContext } from "@dawwen/llm";
+import type { LlmClient, TranscriptContext, EmbeddingClient } from "@dawwen/llm";
 import type { PricingConfig } from "@dawwen/config";
 
 export interface PipelineDependencies {
@@ -30,6 +31,8 @@ export interface PipelineDependencies {
     durationSeconds?: number;
     chunks?: readonly TranscriptChunk[];
   }>;
+  /** Optional embedding generation for semantic (pgvector) search, ADR-016. */
+  embeddingClient?: EmbeddingClient;
   logger?: {
     info: (msg: string, meta?: Record<string, unknown>) => void;
     warn: (msg: string, meta?: Record<string, unknown>) => void;
@@ -250,6 +253,51 @@ export async function processMeetingAudio(
       },
     });
     createdSegments.push(dbSeg);
+  }
+
+  // 5.5 Semantic search embeddings (pgvector, ADR-016). Optional; skipped when
+  // no embedding client is configured (e.g. demo mode) — search stays keyword-only.
+  if (deps.embeddingClient && createdSegments.length > 0) {
+    try {
+      const providerName = deps.embeddingClient.providerName;
+      const texts = createdSegments.map((s) => `${s.speakerLabel ?? "Speaker"}: ${s.text}`);
+      const vectors = await deps.embeddingClient.embed(texts);
+      const tokenEstimate = (text: string) => Math.max(1, Math.ceil(text.length / 4));
+      let summedTokens = 0;
+      for (let i = 0; i < createdSegments.length && i < vectors.length; i++) {
+        const text = texts[i]!;
+        summedTokens += tokenEstimate(text);
+        await saveSegmentEmbedding(prisma, {
+          meetingId,
+          segmentId: createdSegments[i]!.id,
+          text,
+          embedding: vectors[i]!,
+          providerName,
+          tokenEstimate: tokenEstimate(text),
+        });
+      }
+
+      // Invariant 7: meter the embedding cost with a real estimate.
+      const embeddingsCostPerMillion =
+        pricingConfig.providerCosts.embeddingsPerMillionTokensMicros[providerName] ?? 0;
+      await prisma.usageEvent.create({
+        data: {
+          userId,
+          meetingId,
+          operationType: "EMBEDDING_GENERATION",
+          quantity: summedTokens,
+          unit: "tokens",
+          costMicros: BigInt(Math.round((summedTokens * embeddingsCostPerMillion) / 1_000_000)),
+          metadata: { provider: providerName, segments: createdSegments.length },
+        },
+      });
+    } catch (embedErr) {
+      // Semantic search is best-effort: keyword search keeps working without it.
+      log.warn("embedding generation failed; semantic search will be unavailable for this meeting", {
+        error: (embedErr as Error).message,
+        meetingId,
+      });
+    }
   }
 
   // 6. Record ASR Usage Event (Hard Invariant 7)

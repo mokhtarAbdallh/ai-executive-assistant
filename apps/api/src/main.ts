@@ -1,4 +1,5 @@
 import { ConfigError, loadApiConfig, loadDotEnvForDev, type ApiConfig } from "@dawwen/config";
+import { createEmbeddingClient } from "@dawwen/llm";
 import { buildApp } from "./app.js";
 import { GoogleCalendarProvider } from "./services/calendar.js";
 
@@ -32,11 +33,26 @@ async function main(): Promise<void> {
     }
   }
 
+  // Semantic search (pgvector) — enabled only when an embedding model is configured.
+  let embeddingClient;
+  if (config.llmProvider === "bedrock" && config.bedrock.embeddingModelId) {
+    embeddingClient = createEmbeddingClient({
+      provider: "bedrock",
+      bedrock: {
+        region: config.awsRegion,
+        endpointUrl: config.awsEndpointUrl,
+        modelId: config.bedrock.embeddingModelId,
+        dimensions: config.embeddingDim,
+      },
+    });
+  }
+
   const app = await buildApp({
     corsOrigins: config.corsOrigins,
     logLevel: config.isProduction ? "info" : "debug",
     appSecret: config.appSecret,
     calendarProvider,
+    embeddingClient,
   });
 
   const shutdown = async (signal: string) => {

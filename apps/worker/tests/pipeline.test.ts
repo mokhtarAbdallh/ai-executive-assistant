@@ -336,4 +336,57 @@ describe("Worker Pipeline (@dawwen/worker)", () => {
     expect(llmEvent.data.unit).toBe("tokens");
     expect(llmEvent.data.costMicros).toBeDefined();
   });
+
+  it("generates pgvector embeddings + EMBEDDING_GENERATION usage event when an embedding client is configured (ADR-016)", async () => {
+    mockDb.$executeRaw = vi.fn().mockResolvedValue(1);
+    const embeddingClient = {
+      providerName: "fake-embeddings",
+      embed: vi.fn().mockResolvedValue([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]]),
+    };
+
+    await processMeetingAudio(
+      {
+        ...pipelineDeps,
+        embeddingClient,
+        pricingConfig: {
+          ...mockPricing,
+          providerCosts: {
+            ...mockPricing.providerCosts,
+            embeddingsPerMillionTokensMicros: { "fake-embeddings": 20000 },
+          },
+        },
+      },
+      { meetingId, userId, s3Bucket, s3Key },
+    );
+
+    // One raw INSERT per transcript segment
+    const insertCalls = mockDb.$executeRaw.mock.calls as unknown[][];
+    expect(insertCalls.length).toBeGreaterThan(0);
+
+    // Metering: embeddings are a metered paid operation (Invariant 7)
+    const usageCalls = mockDb.usageEvent.create.mock.calls;
+    const embeddingEvent = usageCalls.find(
+      ([c]: any) => c.data.operationType === "EMBEDDING_GENERATION",
+    )?.[0];
+    expect(embeddingEvent).toBeDefined();
+    expect(embeddingEvent.data.unit).toBe("tokens");
+    expect(embeddingEvent.data.quantity).toBeGreaterThan(0);
+    expect(Number(embeddingEvent.data.costMicros)).toBeGreaterThan(0);
+  });
+
+  it("embedding failures are non-fatal: pipeline still completes (keyword search fallback)", async () => {
+    mockDb.$executeRaw = vi.fn().mockRejectedValue(new Error("pgvector down"));
+    const embeddingClient = {
+      providerName: "fake-embeddings",
+      embed: vi.fn().mockResolvedValue([[0.1, 0.2]]),
+    };
+
+    const result = await processMeetingAudio(
+      { ...pipelineDeps, embeddingClient },
+      { meetingId, userId, s3Bucket, s3Key },
+    );
+
+    expect(result.meetingId).toBe(meetingId);
+    expect(result.decisionsCount).toBeGreaterThan(0);
+  });
 });

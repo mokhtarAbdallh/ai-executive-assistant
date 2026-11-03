@@ -1,4 +1,5 @@
 export * from "./client.js";
+export * from "./vector.sql.js";
 export * from "./proposals/state-machine.js";
 export * from "./repositories/base.js";
 export * from "./repositories/meeting.repository.js";
