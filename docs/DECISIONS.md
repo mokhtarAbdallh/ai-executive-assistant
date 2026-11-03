@@ -172,3 +172,73 @@ visual language in both themes and both languages.
 - **No fabricated metrics:** the previous "×2.5 time saved" KPI was removed. Dashboard numbers
   are derived from real data (meetings, decisions, tasks, recorded duration) and the pending
   proposals badge comes from `fetchProposals()`.
+
+## ADR-017: Cognito auth, Google OAuth, and env contract hardening
+
+- `AUDIO_BUCKET` (not a display name) is the single bucket variable; the same S3Client is
+  injected into both upload routes and `DataManagementService` so signing and deletion hit the
+  same bucket.
+- `ASR_PROVIDER` accepts `qwencleo-http` alongside the SaaS providers. Credential rules are
+  centralized in `packages/config/src/env.ts`: `isHttpAsrProvider` (self-hosted, optional shared
+  key `ASR_HTTP_API_KEY`) vs `isKeyedAsrProvider` (requires `ASR_API_KEY`).
+- `AUTH_PROVIDER=cognito` must come with `COGNITO_USER_POOL_ID`; the local mock pool only exists
+  outside production.
+- Google OAuth redirect base is `PUBLIC_BASE_URL` (never the container-internal address).
+- The demo `/process-demo` endpoint and demo login are registered only when `NODE_ENV != production`
+  or `DEMO_MODE=true`; the seed password (`DawwenDemo2026!`) is shared with the demo login form.
+- `CORS_ORIGINS` is injected by ECS (per-environment origins), never hard-coded in the image.
+
+## ADR-018: QwenCleo HTTP adapter — chunked transcription for real timestamps
+
+- The official QwenCleo FastAPI server (`POST /v1/transcribe`) returns `{"text","language"` only —
+  no timestamps or diarization (verified from `server/app.py` upstream source).
+- Because Invariant 2 requires per-segment timestamps, the worker uses `transcribeChunked()`:
+  ffmpeg re-encodes the upload to 16 kHz mono WAV (stdin pipe), cuts ~20 s chunks
+  (`ASR_HTTP_OPTIONS.chunkSeconds`, no overlap in the MVP — upstream recommends 2 s overlap, a
+  possible later refinement), and synthesizes segment timestamps from chunk ranges. If ffmpeg is
+  unavailable the original bytes go through as one whole-file segment (transparent fallback).
+- Language hints map Egypt- dialect / code-switched meetings to `"Arabic"` (model-card
+  recommendation), English meetings to `"English"`.
+- The ElevenLabs SaaS adapter stays available in parallel for the ASR bake-off; a WER bake-off
+  on real Egyptian recordings decides the production ASR before GPU deployment.
+
+## ADR-019: Stuck-meeting sweeper
+
+- Message metadata (SQS visibility timeout / maxReceiveCount → DLQ) cannot settle a half-finished
+  pipeline: after retry exhaustion the message is dropped and the meeting row stays in
+  `TRANSCRIBING`/`ANALYZING` forever.
+- The worker runs an idempotent sweeper (`apps/worker/src/sweeper.ts`) that bulk-marks stale
+  meetings in those two statuses as `FAILED` with an explanatory `failureReason` once
+  `updatedAt` is older than `STUCK_MEETING_MINUTES`; interval is `STUCK_SWEEP_SECONDS`
+  (0 disables). DONE/FAILED rows are never touched.
+
+## ADR-020: Reminder dispatcher — booking-free, send-then-claim
+
+- Due `SCHEDULED` reminders are delivered **send-then-claim**: the email goes out first and only
+  then does a status-guarded `updateMany` (`WHERE status=SCHEDULED`) mark it `SENT`. Rationale: a
+  duplicated reminder (crash between send and claim) is an annoyance, while a silently dropped one
+  (claim-then-send semantics) is a missed meeting. A lost claim race (`count=0`) skips the
+  duplicate send in multi-replica deployments; in the single-replica worker it is a no-op.
+- Delivery channel: `EMAIL_FROM` configured → `SesEmailSender` (`@aws-sdk/client-sesv2`, Simple
+  content, UTF-8); otherwise the default console channel still marks reminders `SENT` so dispatch
+  works with zero SES permissions in dev. A failed send leaves the reminder `SCHEDULED` so the
+  next dispatch retries it.
+- **CloudWatch:** `alarms.tf` adds an SNS topic + `alarm_email` subscription; DLQ-oldest-age
+  (> 900 s) and audio-queue backlog alarms page when messages move to the DLQ (i.e. the sweeper
+  path was exercised).
+
+## ADR-021: Container runtime contract — bundle + generated Prisma client
+
+- tsup bundles all `@dawwen/*` workspace source into a single `dist/main.js`
+  (`noExternal: /^@dawwen\//`, `conditions=source`); npm dependencies stay external. The old
+  Dockerfiles copied only `packages/{config,shared}` — both images failed to build and run.
+  The images now copy `packages/{config,shared,db,asr,llm}`.
+- Runner stages install **prod-only** dependencies against the workspace manifests and then
+  generate the Prisma client from the copied `packages/db/prisma/schema.prisma`
+  (`pnpm --filter @dawwen/db exec prisma generate`). Consequently `prisma` became a **regular**
+  dependency of `@dawwen/db` (not dev) so the CLI exists in prod installs.
+- The bundled `BedrockLlmClient` resolves the analysis prompt relative to the bundle
+  (`dist` → `../prompts`), so `packages/llm/src/prompts` is copied to `apps/api/prompts` and
+  `apps/worker/prompts`.
+- Worker runtime image includes ffmpeg for the ADR-018 audio pre-processing.
+

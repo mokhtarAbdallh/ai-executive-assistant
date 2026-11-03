@@ -20,7 +20,7 @@ Internet
    ├── Background Processing: ECS Fargate: `worker` container (consumes SQS, runs ffmpeg)
    ├── Database: Aurora PostgreSQL Serverless v2 with `pgvector`
    ├── AI Foundation: Amazon Bedrock (Claude 3.5 Sonnet + Titan Embeddings G1)
-   └── External ASR: ElevenLabs Scribe API
+   └── External ASR: ElevenLabs Scribe API OR self-hosted QwenCleo (`ASR_PROVIDER`, ADR-018)
 ```
 
 ### Critical Infrastructure Ports & Contracts
@@ -48,10 +48,21 @@ Before executing Terraform or deploying containers to a real AWS account:
 3. Note the Certificate ARN and supply it to Terraform variable `certificate_arn`.
 
 ### C. AWS Secrets Manager Credentials
-Terraform (`infra/terraform/ecs.tf`) references four secrets in Secrets Manager under prefix `${project}-${environment}`:
-1. `app_secret`: 64-character random string (e.g., `openssl rand -hex 32`). Used for JWT signing and token encryption.
-2. `google_oauth`: JSON string `{"client_id": "<ID>", "client_secret": "<SECRET>"}` from Google Cloud Console.
-3. `asr_api_key`: ElevenLabs API key string (`xi-api-key`).
+Terraform (`infra/terraform/ecs.tf` + `database.tf`) references secrets in Secrets Manager under prefix `${project}-${environment}`:
+1. `app-secret`: 64-character random string (e.g., `openssl rand -hex 32`). Used for JWT signing and token encryption.
+2. `google-oauth`: JSON string `{"client_id": "<ID>", "client_secret": "<SECRET>"}` from Google Cloud Console.
+3. `asr-api-key`: ElevenLabs API key string (`xi-api-key`).
+4. `asr-http-api-key`: optional shared key for the self-hosted QwenCleo ASR server (ADR-018); required only when `ASR_PROVIDER=qwencleo-http` and the server is configured to expect a key.
+
+### D. Self-hosted ASR + Notifications (optional)
+- `ASR_PROVIDER=qwencleo-http` points the worker at the self-hosted QwenCleo FastAPI server
+  (`asr_http_url` variable, e.g. `http://server.internal:8000`). The worker pre-processes audio to
+  16 kHz mono WAV chunks, so the GPU server only needs the `POST /v1/transcribe` contract (ADR-018).
+- `EMAIL_FROM` (e.g. `no-reply@yourdomain.com`) enables SES email for the reminder dispatcher; the
+  sender identity must be verified in SES (sandbox mode requires verifying recipient addresses too).
+  Without `EMAIL_FROM` reminders dispatch through the console channel (ADR-020).
+- `alarm_email` (Terraform variable) subscribes an email endpoint to the alarms SNS topic
+  (`alarms.tf`). Leave empty to skip the subscription; alarms still exist in CloudWatch.
 
 ---
 
@@ -126,11 +137,14 @@ aws elbv2 describe-target-health --target-group-arn <WEB_TARGET_GROUP_ARN>
 
 ## 5. Monitoring & Alerting
 
-### Key CloudWatch Metric Alarms
-1. **SQS Queue Age (`ApproximateAgeOfOldestMessage`):**
-   - Alarm when `> 300 seconds` (indicates audio processing worker backlog or freeze).
-2. **DLQ Message Count (`ApproximateNumberOfMessagesVisible`):**
-   - Alarm when `> 0` on `meeting-assistant-audio-processing-dlq`. Requires immediate investigation.
+Actual alarms created by `infra/terraform/alarms.tf` (SNS topic `${project}-${environment}-alarms`):
+1. **Audio DLQ age (`${project}-${environment}-audio-dlq-age`):**
+   `ApproximateAgeOfOldestMessage > 900 s` on the audio DLQ for 2 evaluations — messages reached the
+   DLQ after exhausting retries; meetings stay `TRANSCRIBING/ANALYZING` until the sweeper fails them
+   (ADR-019). Investigate, then redrive (Scenario A).
+2. **Audio queue backlog (`${project}-${environment}-audio-queue-backlog`):**
+   `ApproximateNumberOfMessagesVisible > 50` for 30 minutes — workers under-provisioned or ASR
+   too slow; scale out (max 5 tasks) or check the ASR endpoint.
 3. **ECS Memory/CPU Utilization:**
    - Worker task CPU `> 85%` for 5 consecutive minutes → trigger auto-scaling scale-out up to `worker_max = 5`.
 4. **ALB 5XX Errors:**
@@ -152,7 +166,8 @@ fields @timestamp, @message
 
 ### Scenario A: SQS Dead Letter Queue (DLQ) Has Messages
 - **Symptom:** CloudWatch alarm on DLQ triggers.
-- **Cause:** Audio file corrupt, ElevenLabs ASR quota exhausted, or Bedrock rate limit exceeded after 3 SQS delivery attempts.
+- **Cause:** Audio file corrupt, ASR failure (ElevenLabs quota exhausted, self-hosted ASR server
+  unreachable — check `asr_http_url`), or Bedrock rate limit exceeded after 3 SQS delivery attempts.
 - **Procedure:**
   1. Inspect the message attributes and error log in CloudWatch:
      ```bash

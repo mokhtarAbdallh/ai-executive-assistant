@@ -84,15 +84,11 @@ export async function dispatchDueReminders(
   for (const reminder of due) {
     try {
       if (sender && reminder.user.email) {
-        // Claim first (single worker assumption, see ADR-020): matters more than
-        // send-then-claim because a crash between send and claim is rarer than
-        // a crash between claim and send.
-        const claimed = await prisma.reminder.updateMany({
-          where: { id: reminder.id, status: ReminderStatus.SCHEDULED },
-          data: { status: ReminderStatus.SENT, sentAt: now },
-        });
-        if (claimed.count === 0) continue; // someone else took it
-
+        // Send-then-claim (ADR-020): a duplicated reminder is an annoyance, a
+        // silently dropped one is a missed meeting — so we only claim after a
+        // successful send. A crash in between causes a duplicate send on the
+        // next dispatch, and a failed claim (another worker already sent it)
+        // is skipped via the status guard.
         const input: EmailInputLike = {
           to: reminder.user.email,
           subject: "تذكير من دوّن (Dawwen reminder)",
@@ -101,6 +97,11 @@ export async function dispatchDueReminders(
             : `لديك تذكير مستحق.\n\n${reminder.channel}`,
         };
         const result = await sender.sendEmail(input);
+        const claimed = await prisma.reminder.updateMany({
+          where: { id: reminder.id, status: ReminderStatus.SCHEDULED },
+          data: { status: ReminderStatus.SENT, sentAt: now },
+        });
+        if (claimed.count === 0) continue; // another replica already sent it
         sent++;
         logger.info("reminder dispatched", {
           reminderId: reminder.id,

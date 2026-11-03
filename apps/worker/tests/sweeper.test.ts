@@ -141,10 +141,16 @@ describe("Reminder dispatcher (ADR-020)", () => {
 
   it("Hard Invariant 5 guard: it only claims reminders still in SCHEDULED (cancelled ones are skipped)", async () => {
     seed();
-    // another worker already claimed it between listing and claiming
+    // another replica already sent it between the send and the claim
     mockDb.reminder.updateMany.mockResolvedValue({ count: 0 });
+    const sender = {
+      sendEmail: vi.fn().mockResolvedValue({ messageId: "ses-1" }),
+    };
 
-    const sent = await dispatchDueReminders(mockDb as never, options);
+    const sent = await dispatchDueReminders(mockDb as never, {
+      ...options,
+      sender,
+    });
 
     // claim query was status-filtered
     const args = mockDb.reminder.updateMany.mock.calls[0][0] as {
@@ -188,8 +194,11 @@ describe("Reminder dispatcher (ADR-020)", () => {
     expect(sentEmails[0]!.body).toContain("meet-1");
 
     const claim = mockDb.reminder.updateMany.mock.calls[0][0] as {
+      where: { id: string; status: string };
       data: { status: string; sentAt: Date };
     };
+    // Send-then-claim (ADR-020): claim happens only after send succeeded.
+    expect(claim.where.status).toBe(ReminderStatus.SCHEDULED);
     expect(claim.data.status).toBe(ReminderStatus.SENT);
     expect(claim.data.sentAt).toBeInstanceOf(Date);
   });
@@ -223,6 +232,9 @@ describe("Reminder dispatcher (ADR-020)", () => {
       "failed to dispatch reminder",
       expect.anything(),
     );
+    // Send-then-claim: a failed send must NOT mark the reminder SENT — the next
+    // dispatch retries it while it is still SCHEDULED.
+    expect(mockDb.reminder.updateMany).not.toHaveBeenCalled();
   });
 
   it("ConsoleEmailSender emits a stdout log and resolves a messageId", async () => {
