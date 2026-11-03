@@ -12,6 +12,8 @@ import { createSpeechToText } from "@dawwen/asr";
 import { createLlmClient, createEmbeddingClient } from "@dawwen/llm";
 import { prepareAudioForAsr } from "./audio.js";
 import { SqsAudioConsumer } from "./consumer.js";
+import { dispatchDueReminders, sweepStuckMeetings } from "./sweeper.js";
+import { SesEmailSender } from "./reminders.js";
 
 function readConfig(): WorkerConfig {
   loadDotEnvForDev();
@@ -163,17 +165,51 @@ async function main(): Promise<void> {
 
   let isShuttingDown = false;
 
+  const housekeepingTimers: NodeJS.Timeout[] = [];
+
   const shutdown = async (signal: string) => {
     if (isShuttingDown) return;
     isShuttingDown = true;
     log.info(`received ${signal}, shutting down worker`);
     consumer.stop();
+    for (const timer of housekeepingTimers) clearInterval(timer);
     await prisma.$disconnect();
     setTimeout(() => process.exit(0), 1000);
   };
 
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
+
+  // Housekeeping intervals (ADR-019/ADR-020). Both are disabled with a 0 config
+  // so tests / one-shot runs can opt out.
+  if (config.stuckSweepSeconds > 0 && config.stuckMeetingMinutes > 0) {
+    const sweep = () =>
+      sweepStuckMeetings(prisma, {
+        stuckAfterMs: config.stuckMeetingMinutes * 60_000,
+        logger: log,
+      }).catch((err: unknown) =>
+        log.warn("stuck-meeting sweep failed", { error: (err as Error).message }),
+      );
+    void sweep(); // once at startup, then on an interval
+    housekeepingTimers.push(setInterval(sweep, config.stuckSweepSeconds * 1_000));
+  }
+
+  if (config.reminderDispatchSeconds > 0) {
+    const emailSender = config.emailFrom
+      ? new SesEmailSender({
+          region: config.awsRegion,
+          fromAddress: config.emailFrom,
+          endpointUrl: process.env.AWS_ENDPOINT_URL,
+        })
+      : undefined;
+    const dispatch = () =>
+      dispatchDueReminders(prisma, { logger: log, sender: emailSender }).catch(
+        (err: unknown) =>
+          log.warn("reminder dispatch failed", { error: (err as Error).message }),
+      );
+    void dispatch();
+    housekeepingTimers.push(setInterval(dispatch, config.reminderDispatchSeconds * 1_000));
+  }
 
   // Start polling
   await consumer.startPolling(1000);
