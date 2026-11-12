@@ -1,47 +1,83 @@
-import type { PrismaClient } from "@dawwen/db";
+import type { PrismaClient, CreditRepository } from "@dawwen/db";
 import { MeetingStatus, ReminderStatus } from "@dawwen/db";
 import type { EmailInputLike, ReminderEmailSender } from "./reminders.js";
 
 export interface SweeperOptions {
   /** Meetings in TRANSCRIBING/ANALYZING older than this are marked FAILED. */
   stuckAfterMs: number;
+  /** Releases credit held by a swept meeting (ADR-023). */
+  credits?: Pick<CreditRepository, "settleCredits">;
   logger?: {
     info: (msg: string, meta?: Record<string, unknown>) => void;
     warn: (msg: string, meta?: Record<string, unknown>) => void;
   };
 }
 
+const STUCK_STATUSES = [MeetingStatus.TRANSCRIBING, MeetingStatus.ANALYZING];
+
 /**
  * Stale-job sweeper (ADR-019): meetings whose worker crashed mid-pipeline would
  * otherwise stay in TRANSCRIBING/ANALYZING forever (SQS gives up after
  * maxReceiveCount and moves the message to the DLQ — nobody consumed it).
- * Idempotent: it only flips statuses that should never be settled again.
+ * Swept meetings become FAILED (the user can retry) and any credit they still
+ * hold is released (ADR-023). Idempotent: every flip is a conditional update.
  */
 export async function sweepStuckMeetings(
   prisma: PrismaClient,
   options: SweeperOptions,
 ): Promise<number> {
-  const { stuckAfterMs, logger } = options;
+  const { stuckAfterMs, logger, credits } = options;
   const cutoff = new Date(Date.now() - stuckAfterMs);
+  const stuckWhere = { status: { in: STUCK_STATUSES }, updatedAt: { lt: cutoff } };
+  const failure = {
+    status: MeetingStatus.FAILED,
+    failureReason: `Processing timed out after ${Math.round(stuckAfterMs / 60_000)} minutes (likely worker crash). Use "Retry" to process it again.`,
+    creditHoldMicros: 0n,
+  };
 
-  const result = await prisma.meeting.updateMany({
-    where: {
-      status: { in: [MeetingStatus.TRANSCRIBING, MeetingStatus.ANALYZING] },
-      updatedAt: { lt: cutoff },
-    },
-    data: {
-      status: MeetingStatus.FAILED,
-      failureReason: `Processing timed out after ${Math.round(stuckAfterMs / 60_000)} minutes (likely worker crash). Re-upload the audio to retry.`,
-    },
+  let swept = 0;
+
+  // Meetings holding credit: flip one by one so each hold is released exactly once.
+  const held = await prisma.meeting.findMany({
+    where: { ...stuckWhere, creditHoldMicros: { gt: 0n } },
+    select: { id: true, userId: true, creditHoldMicros: true },
+    take: 100,
   });
+  for (const meeting of held) {
+    const flipped = await prisma.meeting.updateMany({
+      where: { id: meeting.id, ...stuckWhere },
+      data: failure,
+    });
+    if (flipped.count === 0) continue;
+    swept++;
+    if (credits) {
+      await credits
+        .settleCredits(
+          { userId: meeting.userId },
+          meeting.creditHoldMicros,
+          0n,
+          "Hold released: processing timed out",
+          meeting.id,
+        )
+        .catch((err: unknown) =>
+          logger?.warn("could not release credit hold of a swept meeting", {
+            meetingId: meeting.id,
+            error: (err as Error).message,
+          }),
+        );
+    }
+  }
 
-  if (result.count > 0) {
+  const rest = await prisma.meeting.updateMany({ where: stuckWhere, data: failure });
+  swept += rest.count;
+
+  if (swept > 0) {
     logger?.warn("sweeper marked stuck meetings as FAILED", {
-      count: result.count,
+      count: swept,
       olderThanMs: stuckAfterMs,
     });
   }
-  return result.count;
+  return swept;
 }
 
 export interface ReminderDispatchOptions {

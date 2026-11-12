@@ -15,9 +15,6 @@ import {
 import { DataManagementService } from "../src/services/data-management.js";
 import { ManualPaymentAdapter } from "../src/services/payment.js";
 import { CreditRepository, MeetingRepository } from "@dawwen/db";
-import { processMeetingAudio } from "../../worker/src/pipeline.js";
-import { FakeSpeechToText } from "@dawwen/asr";
-import { FakeLlmClient } from "@dawwen/llm";
 
 describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", () => {
   let app: FastifyInstance;
@@ -66,6 +63,7 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
       audioDurationSeconds: 600,
       audioDeletedAt: null,
       failureReason: null,
+      creditHoldMicros: 0n,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -85,6 +83,7 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
       audioDurationSeconds: null,
       audioDeletedAt: null,
       failureReason: null,
+      creditHoldMicros: 0n,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -432,68 +431,6 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
       expect(body.error).toBe("Insufficient credit balance");
       expect(body.message).toContain("positive credit balance");
     });
-
-    it("worker pipeline fails meeting processing with clear reason when balance is 0", async () => {
-      const mockPrisma = (app as any).prisma || {
-        meeting: {
-          findUnique: vi.fn().mockResolvedValue({
-            id: aliceMeetingId,
-            userId: aliceId,
-            title: "Test Meeting",
-            status: MeetingStatus.QUEUED,
-          }),
-          update: vi.fn().mockResolvedValue({}),
-        },
-        creditLedger: {
-          findUnique: vi.fn().mockResolvedValue({
-            userId: aliceId,
-            balanceMicros: 0n,
-            reservedMicros: 0n,
-          }),
-        },
-        recordingConsent: {
-          findFirst: vi.fn().mockResolvedValue({ id: "consent-1", userId: aliceId }),
-        },
-      };
-
-      await expect(
-        processMeetingAudio(
-          {
-            prisma: mockPrisma as any,
-            s3Client: mockS3Client,
-            asrClient: new FakeSpeechToText(),
-            llmClient: new FakeLlmClient(),
-            pricingConfig: {
-              customerPricePerAudioMinuteMicros: 20000,
-              providerCosts: {
-                asrPerAudioMinuteMicros: {},
-                llmPerMillionInputTokensMicros: {},
-                llmPerMillionOutputTokensMicros: {},
-                embeddingsPerMillionTokensMicros: {},
-              },
-              lowBalanceThresholdMicros: 100000,
-            },
-            asrProviderName: "fake",
-            llmProviderName: "fake",
-          },
-          {
-            meetingId: aliceMeetingId,
-            userId: aliceId,
-            s3Bucket: "test-audio-bucket",
-            s3Key: "uploads/test.mp3",
-          },
-        ),
-      ).rejects.toThrow(/Balance gate/);
-
-      expect(mockPrisma.meeting.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            status: MeetingStatus.FAILED,
-            failureReason: expect.stringContaining("Balance gate: insufficient credit balance"),
-          }),
-        }),
-      );
-    });
   });
 
   // ==========================================
@@ -768,6 +705,7 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
         audioDurationSeconds: 100,
         audioDeletedAt: null,
         failureReason: null,
+        creditHoldMicros: 0n,
         createdAt: new Date(),
         updatedAt: new Date(),
       });

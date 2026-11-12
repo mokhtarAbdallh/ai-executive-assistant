@@ -1,6 +1,6 @@
 import { scryptSync, randomBytes, timingSafeEqual } from "node:crypto";
 import { SignJWT, jwtVerify } from "jose";
-import type { PrismaClient} from "@dawwen/db";
+import type { PrismaClient } from "@dawwen/db";
 import { Role } from "@dawwen/db";
 import type { AuthenticatedUser, AuthTokens, IAuthProvider } from "./types.js";
 
@@ -129,7 +129,7 @@ export class LocalAuthProvider implements IAuthProvider {
           create: {
             language: "ar",
             timezone: "Africa/Cairo",
-            audioRetentionDays: 7,
+            audioRetentionDays: 0,
           },
         },
         creditLedger: {

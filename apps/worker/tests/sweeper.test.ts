@@ -9,6 +9,7 @@ import { MeetingStatus, ReminderStatus } from "@dawwen/db";
 
 interface MockDbMeetingShape {
   updateMany: ReturnType<typeof vi.fn>;
+  findMany: ReturnType<typeof vi.fn>;
 }
 
 function makeLogger() {
@@ -25,6 +26,7 @@ describe("Stuck meeting sweeper (ADR-019)", () => {
     mockDb = {
       meeting: {
         updateMany: vi.fn().mockResolvedValue({ count: 2 }),
+        findMany: vi.fn().mockResolvedValue([]),
       },
     };
   });
@@ -71,6 +73,47 @@ describe("Stuck meeting sweeper (ADR-019)", () => {
       "sweeper marked stuck meetings as FAILED",
       expect.anything(),
     );
+  });
+
+  it("releases the credit hold of a swept meeting exactly once (ADR-023)", async () => {
+    mockDb.meeting.findMany.mockResolvedValue([
+      { id: "m-held", userId: "u1", creditHoldMicros: 40_000n },
+    ]);
+    mockDb.meeting.updateMany
+      .mockResolvedValueOnce({ count: 1 }) // the held meeting
+      .mockResolvedValueOnce({ count: 0 }); // nothing else stuck
+    const credits = { settleCredits: vi.fn().mockResolvedValue({}) };
+
+    const count = await sweepStuckMeetings(mockDb as never, {
+      stuckAfterMs: 60_000,
+      credits: credits as never,
+      logger: makeLogger(),
+    });
+
+    expect(count).toBe(1);
+    expect(credits.settleCredits).toHaveBeenCalledWith(
+      { userId: "u1" },
+      40_000n,
+      0n,
+      expect.stringContaining("released"),
+      "m-held",
+    );
+  });
+
+  it("does not release a hold when another sweeper already flipped the meeting", async () => {
+    mockDb.meeting.findMany.mockResolvedValue([
+      { id: "m-held", userId: "u1", creditHoldMicros: 40_000n },
+    ]);
+    mockDb.meeting.updateMany.mockResolvedValue({ count: 0 });
+    const credits = { settleCredits: vi.fn() };
+
+    await sweepStuckMeetings(mockDb as never, {
+      stuckAfterMs: 60_000,
+      credits: credits as never,
+      logger: makeLogger(),
+    });
+
+    expect(credits.settleCredits).not.toHaveBeenCalled();
   });
 
   it("is silent when nothing is stuck (idempotent re-runs)", async () => {

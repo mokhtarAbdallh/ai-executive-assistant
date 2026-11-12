@@ -99,7 +99,7 @@ model UserSettings {
   user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   language           String   @default("ar")
   timezone           String   @default("Africa/Cairo")
-  audioRetentionDays Int      @default(7)
+  audioRetentionDays Int      @default(0)
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
@@ -140,6 +140,8 @@ model Meeting {
   audioDurationSeconds Int?
   audioDeletedAt       DateTime?
   failureReason        String?
+  /// Credit currently held for this meeting's processing (ADR-023); 0 when none.
+  creditHoldMicros     BigInt              @default(0)
   createdAt            DateTime            @default(now())
   updatedAt            DateTime            @updatedAt
 
@@ -416,7 +418,7 @@ model UsageEvent {
   userId        String
   user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   meetingId     String?
-  meeting       Meeting? @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  meeting       Meeting? @relation(fields: [meetingId], references: [id], onDelete: SetNull)
   operationType String
   quantity      Float
   unit          String

@@ -23,7 +23,7 @@ export async function seedDemoUser() {
         create: {
           language: "ar",
           timezone: "Africa/Cairo",
-          audioRetentionDays: 7,
+          audioRetentionDays: 0,
         },
       },
       creditLedger: {

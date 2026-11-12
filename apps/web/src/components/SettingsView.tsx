@@ -46,7 +46,7 @@ export function SettingsView() {
   const [settings, setSettings] = useState<UserSettings>({
     language: "ar",
     timezone: "Africa/Cairo",
-    audioRetentionDays: 7,
+    audioRetentionDays: 0,
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);

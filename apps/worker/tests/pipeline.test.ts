@@ -1,173 +1,64 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { processMeetingAudio, type PipelineDependencies } from "../src/pipeline.js";
 import { FakeSpeechToText } from "@dawwen/asr";
-import { FakeLlmClient } from "@dawwen/llm";
+import { FakeLlmClient, LlmAnalysisFailedError } from "@dawwen/llm";
 import {
+  InsufficientBalanceError,
   MeetingStatus,
   ProposalActionType,
   ProposalStatus,
 } from "@dawwen/db";
+import {
+  createMemoryPrisma,
+  seedQueuedMeeting,
+  type MemoryPrisma,
+} from "./helpers/memory-prisma.js";
 
 describe("Worker Pipeline (@dawwen/worker)", () => {
   const userId = "user-pipeline-test";
   const meetingId = "meet-pipeline-test";
   const s3Bucket = "test-audio-bucket";
   const s3Key = `uploads/${userId}/${meetingId}/sample-audio.mp3`;
-
-  let mockDb: {
-    meeting: any;
-    userSettings: any;
-    recordingConsent: any;
-    transcriptSegment: any;
-    meetingAnalysis: any;
-    agendaItem: any;
-    topicDiscussion: any;
-    decision: any;
-    task: any;
-    openQuestion: any;
-    documentReference: any;
-    proposal: any;
-    usageEvent: any;
-  };
-
-  let mockS3: any;
-  let pipelineDeps: PipelineDependencies;
+  const params = { meetingId, userId, s3Bucket, s3Key };
 
   const mockPricing = {
     customerPricePerAudioMinuteMicros: 20000,
     providerCosts: {
       asrPerAudioMinuteMicros: { fake: 0, elevenlabs: 5000 },
-      llmPerMillionInputTokensMicros: { fake: 0, bedrock: 3000000 },
-      llmPerMillionOutputTokensMicros: { fake: 0, bedrock: 15000000 },
+      llmPerMillionInputTokensMicros: { fake: 1_000_000, bedrock: 3000000 },
+      llmPerMillionOutputTokensMicros: { fake: 1_000_000, bedrock: 15000000 },
       embeddingsPerMillionTokensMicros: { fake: 0, bedrock: 100000 },
     },
     lowBalanceThresholdMicros: 1000000,
   };
 
+  let db: MemoryPrisma;
+  let mockS3: { send: ReturnType<typeof vi.fn> };
+  let pipelineDeps: PipelineDependencies;
+
+  const meeting = () => db.tables.meeting![0]!;
+  const usage = (type: string) => db.tables.usageEvent!.filter((e) => e.operationType === type);
+
   beforeEach(() => {
-    // In-memory mock tables
-    const segmentsStore: any[] = [];
-    const decisionsStore: any[] = [];
-    const tasksStore: any[] = [];
-    const proposalsStore: any[] = [];
-    const usageEventsStore: any[] = [];
-    let meetingStatus = MeetingStatus.QUEUED;
-    let audioDeletedAt: Date | null = null;
-    let failureReason: string | null = null;
+    db = createMemoryPrisma();
+    seedQueuedMeeting(db, { meetingId, userId, s3Key });
 
-    mockDb = {
-      meeting: {
-        findUnique: vi.fn().mockImplementation(({ where }: { where: { id: string } }) => {
-          if (where.id === meetingId) {
-            return Promise.resolve({
-              id: meetingId,
-              userId,
-              title: "Sprint Review & Planning",
-              status: meetingStatus,
-              language: "ar",
-              audioS3Key: s3Key,
-              audioDurationSeconds: null,
-              audioDeletedAt,
-              failureReason,
-            });
-          }
-          return Promise.resolve(null);
-        }),
-        update: vi.fn().mockImplementation(({ data }: { data: any }) => {
-          if (data.status) meetingStatus = data.status;
-          if (data.audioDeletedAt) audioDeletedAt = data.audioDeletedAt;
-          if (data.failureReason) failureReason = data.failureReason;
-          return Promise.resolve({ id: meetingId, status: meetingStatus });
-        }),
-      },
-      userSettings: {
-        findUnique: vi.fn().mockResolvedValue({
-          userId,
-          audioRetentionDays: 0, // Invariant 5 default: immediate deletion
-        }),
-      },
-      recordingConsent: {
-        findFirst: vi.fn().mockResolvedValue({
-          id: "consent-1",
-          userId,
-          meetingId,
-          participantName: "Test Participant",
-        }),
-      },
-      transcriptSegment: {
-        create: vi.fn().mockImplementation(({ data }: { data: any }) => {
-          const item = { id: `seg-${segmentsStore.length + 1}`, ...data };
-          segmentsStore.push(item);
-          return Promise.resolve(item);
-        }),
-      },
-      meetingAnalysis: {
-        upsert: vi.fn().mockResolvedValue({ id: "analysis-1", meetingId }),
-      },
-      agendaItem: {
-        create: vi.fn().mockResolvedValue({ id: "agenda-1" }),
-      },
-      topicDiscussion: {
-        create: vi.fn().mockResolvedValue({ id: "topic-1" }),
-      },
-      decision: {
-        create: vi.fn().mockImplementation(({ data }: { data: any }) => {
-          const item = { id: `dec-${decisionsStore.length + 1}`, ...data };
-          decisionsStore.push(item);
-          return Promise.resolve(item);
-        }),
-      },
-      task: {
-        create: vi.fn().mockImplementation(({ data }: { data: any }) => {
-          const item = { id: `task-${tasksStore.length + 1}`, ...data };
-          tasksStore.push(item);
-          return Promise.resolve(item);
-        }),
-      },
-      openQuestion: {
-        create: vi.fn().mockResolvedValue({ id: "q-1" }),
-      },
-      documentReference: {
-        create: vi.fn().mockResolvedValue({ id: "doc-1" }),
-      },
-      proposal: {
-        create: vi.fn().mockImplementation(({ data }: { data: any }) => {
-          const item = { id: `prop-${proposalsStore.length + 1}`, ...data };
-          proposalsStore.push(item);
-          return Promise.resolve(item);
-        }),
-      },
-      usageEvent: {
-        create: vi.fn().mockImplementation(({ data }: { data: any }) => {
-          const item = { id: `use-${usageEventsStore.length + 1}`, ...data };
-          usageEventsStore.push(item);
-          return Promise.resolve(item);
-        }),
-      },
-    };
-
-    // S3 Mock
     mockS3 = {
-      send: vi.fn().mockImplementation(async (command: any) => {
-        const cmdName = command.constructor.name;
-        if (cmdName === "GetObjectCommand") {
-          // Return an async iterable stream for audio
+      send: vi.fn().mockImplementation(async (command: { constructor: { name: string } }) => {
+        if (command.constructor.name === "GetObjectCommand") {
           return {
             Body: (async function* () {
               yield Buffer.from("RIFFmockwaveaudioheaderdata");
             })(),
           };
         }
-        if (cmdName === "DeleteObjectCommand") {
-          return {};
-        }
         return {};
       }),
     };
 
     pipelineDeps = {
-      prisma: mockDb as any,
-      s3Client: mockS3,
+      prisma: db as never,
+      s3Client: mockS3 as never,
       asrClient: new FakeSpeechToText(),
       llmClient: new FakeLlmClient(),
       pricingConfig: mockPricing,
@@ -176,172 +67,216 @@ describe("Worker Pipeline (@dawwen/worker)", () => {
     };
   });
 
-  it("executes the full pipeline in demo mode end-to-end", async () => {
-    const result = await processMeetingAudio(pipelineDeps, {
-      meetingId,
-      userId,
-      s3Bucket,
-      s3Key,
-    });
+  it("executes the full pipeline end-to-end and ends in REVIEW_PENDING", async () => {
+    const result = await processMeetingAudio(pipelineDeps, params);
 
-    expect(result.meetingId).toBe(meetingId);
+    expect(result.skipped).toBe(false);
     expect(result.audioDurationSeconds).toBeGreaterThan(0);
     expect(result.segmentsCount).toBeGreaterThan(0);
     expect(result.decisionsCount).toBeGreaterThan(0);
     expect(result.tasksCount).toBeGreaterThan(0);
     expect(result.audioDeleted).toBe(true);
-
-    // Verify S3 audio was downloaded
-    expect(mockS3.send).toHaveBeenCalled();
+    expect(meeting().status).toBe(MeetingStatus.REVIEW_PENDING);
   });
 
-  it("Hard Invariant 4: Consent Gate blocks processing if consent is missing", async () => {
-    // Override: no consent found
-    mockDb.recordingConsent.findFirst.mockResolvedValue(null);
+  it("skips a duplicate delivery: only a QUEUED meeting can be claimed", async () => {
+    await processMeetingAudio(pipelineDeps, params);
+    const segmentsAfterFirstRun = db.tables.transcriptSegment!.length;
 
-    await expect(
-      processMeetingAudio(pipelineDeps, {
-        meetingId,
-        userId,
-        s3Bucket,
-        s3Key,
-      }),
-    ).rejects.toThrow("Invariant 4");
+    const second = await processMeetingAudio(pipelineDeps, params);
 
-    // Verify meeting marked FAILED
-    expect(mockDb.meeting.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: meetingId },
-        data: expect.objectContaining({
-          status: MeetingStatus.FAILED,
-          failureReason: expect.stringContaining("Consent gate"),
-        }),
-      }),
-    );
+    expect(second.skipped).toBe(true);
+    expect(db.tables.transcriptSegment!.length).toBe(segmentsAfterFirstRun);
+    expect(usage("AUDIO_TRANSCRIPTION")).toHaveLength(1);
+  });
+
+  it("a retry starts from a clean slate (no duplicated results)", async () => {
+    // Leftovers of an earlier failed attempt.
+    db.tables.transcriptSegment!.push({ id: "old-seg", meetingId, text: "stale" });
+    db.tables.decision!.push({ id: "old-dec", meetingId, text: "stale" });
+    db.tables.proposal!.push({
+      id: "old-prop",
+      meetingId,
+      status: ProposalStatus.PENDING_APPROVAL,
+    });
+
+    await processMeetingAudio(pipelineDeps, params);
+
+    const ids = (t: string) => db.tables[t]!.map((r) => r.id);
+    expect(ids("transcriptSegment")).not.toContain("old-seg");
+    expect(ids("decision")).not.toContain("old-dec");
+    expect(ids("proposal")).not.toContain("old-prop");
+    expect(db.tables.proposal!).toHaveLength(1);
+  });
+
+  it("Hard Invariant 4: Consent Gate fails the meeting if consent is missing", async () => {
+    db.tables.recordingConsent!.length = 0;
+
+    await expect(processMeetingAudio(pipelineDeps, params)).rejects.toThrow("Invariant 4");
+
+    expect(meeting().status).toBe(MeetingStatus.FAILED);
+    expect(meeting().failureReason).toContain("Consent gate");
+    expect(mockS3.send).not.toHaveBeenCalled();
+  });
+
+  it("any failure marks the meeting FAILED with a reason and keeps the audio for a retry", async () => {
+    pipelineDeps.asrClient = {
+      providerName: "fake",
+      transcribe: vi.fn().mockRejectedValue(new Error("ASR service unavailable")),
+    } as never;
+
+    await expect(processMeetingAudio(pipelineDeps, params)).rejects.toThrow();
+
+    expect(meeting().status).toBe(MeetingStatus.FAILED);
+    expect(meeting().failureReason).toContain("ASR service unavailable");
+    expect(meeting().audioDeletedAt).toBeNull();
+  });
+
+  describe("credit hold (ADR-023)", () => {
+    let credits: {
+      reserveCredits: ReturnType<typeof vi.fn>;
+      settleCredits: ReturnType<typeof vi.fn>;
+    };
+
+    beforeEach(() => {
+      credits = {
+        reserveCredits: vi.fn().mockResolvedValue({}),
+        settleCredits: vi.fn().mockResolvedValue({ shortfallMicros: 0n }),
+      };
+      pipelineDeps.credits = credits as never;
+    });
+
+    it("holds credit before transcription and settles hold vs. real cost after", async () => {
+      await processMeetingAudio(pipelineDeps, params);
+
+      expect(credits.reserveCredits).toHaveBeenCalled();
+      const held = credits.reserveCredits.mock.calls.reduce(
+        (sum, call) => sum + (call[1] as bigint),
+        0n,
+      );
+      const [, holdArg, actualArg] = credits.settleCredits.mock.calls[0]!;
+      expect(holdArg).toBe(held);
+      expect(actualArg as bigint).toBeGreaterThan(0n);
+      expect(meeting().creditHoldMicros).toBe(0n);
+    });
+
+    it("insufficient balance fails the meeting before paying for ASR", async () => {
+      credits.reserveCredits.mockRejectedValue(new InsufficientBalanceError(0n, 20000n));
+      const asr = new FakeSpeechToText();
+      const transcribe = vi.spyOn(asr, "transcribe");
+      pipelineDeps.asrClient = asr;
+
+      await expect(processMeetingAudio(pipelineDeps, params)).rejects.toThrow("Balance gate");
+
+      expect(transcribe).not.toHaveBeenCalled();
+      expect(meeting().status).toBe(MeetingStatus.FAILED);
+      expect(meeting().failureReason).toContain("Balance gate");
+    });
+
+    it("a failed run releases the hold without charging", async () => {
+      pipelineDeps.llmClient = {
+        providerName: "fake",
+        analyzeMeeting: vi.fn().mockRejectedValue(new Error("boom")),
+      };
+
+      await expect(processMeetingAudio(pipelineDeps, params)).rejects.toThrow();
+
+      expect(credits.settleCredits).toHaveBeenCalledTimes(1);
+      const [, holdArg, actualArg] = credits.settleCredits.mock.calls[0]!;
+      expect(holdArg as bigint).toBeGreaterThan(0n);
+      expect(actualArg).toBe(0n);
+      expect(meeting().creditHoldMicros).toBe(0n);
+    });
+  });
+
+  it("Invariant 7: tokens burnt by a failed LLM analysis are still metered", async () => {
+    pipelineDeps.llmClient = {
+      providerName: "fake",
+      analyzeMeeting: vi
+        .fn()
+        .mockRejectedValue(new LlmAnalysisFailedError("invalid JSON x3", 3000, 600, "fake-model")),
+    };
+
+    await expect(processMeetingAudio(pipelineDeps, params)).rejects.toThrow("Analysis failed");
+
+    const [event] = usage("LLM_ANALYSIS");
+    expect(event).toBeDefined();
+    expect(event!.quantity).toBe(3600);
+    expect(event!.costMicros as bigint).toBeGreaterThan(0n);
+    expect(event!.metadata).toMatchObject({ failed: true });
+    expect(meeting().status).toBe(MeetingStatus.FAILED);
   });
 
   it("Hard Invariant 2: every decision and task cites source transcript segments", async () => {
-    await processMeetingAudio(pipelineDeps, {
-      meetingId,
-      userId,
-      s3Bucket,
-      s3Key,
-    });
+    await processMeetingAudio(pipelineDeps, params);
 
-    // Check decisions
-    expect(mockDb.decision.create).toHaveBeenCalled();
-    const decisionCalls = mockDb.decision.create.mock.calls;
-    for (const [call] of decisionCalls) {
-      expect(call.data.sourceSegmentIds).toBeDefined();
-      expect(Array.isArray(call.data.sourceSegmentIds)).toBe(true);
-      expect(call.data.sourceSegmentIds.length).toBeGreaterThan(0);
-    }
-
-    // Check tasks
-    expect(mockDb.task.create).toHaveBeenCalled();
-    const taskCalls = mockDb.task.create.mock.calls;
-    for (const [call] of taskCalls) {
-      expect(call.data.sourceSegmentIds).toBeDefined();
-      expect(Array.isArray(call.data.sourceSegmentIds)).toBe(true);
-      expect(call.data.sourceSegmentIds.length).toBeGreaterThan(0);
+    for (const table of ["decision", "task"]) {
+      expect(db.tables[table]!.length).toBeGreaterThan(0);
+      for (const row of db.tables[table]!) {
+        expect((row.sourceSegmentIds as string[]).length).toBeGreaterThan(0);
+      }
     }
   });
 
   it("Hard Invariant 3: unassigned tasks (missing owner or date) have needsReview: true", async () => {
-    await processMeetingAudio(pipelineDeps, {
-      meetingId,
-      userId,
-      s3Bucket,
-      s3Key,
-    });
+    await processMeetingAudio(pipelineDeps, params);
 
-    const taskCalls = mockDb.task.create.mock.calls;
-    const unassignedCalls = taskCalls.filter(
-      ([call]: any) => !call.data.ownerName || !call.data.dueDate,
-    );
-
-    expect(unassignedCalls.length).toBeGreaterThan(0);
-    for (const [call] of unassignedCalls) {
-      expect(call.data.needsReview).toBe(true);
-    }
+    const unassigned = db.tables.task!.filter((t) => !t.ownerName || !t.dueDate);
+    expect(unassigned.length).toBeGreaterThan(0);
+    for (const t of unassigned) expect(t.needsReview).toBe(true);
   });
 
   it("Hard Invariant 1: next meeting is created as a Proposal with PENDING_APPROVAL", async () => {
-    await processMeetingAudio(pipelineDeps, {
-      meetingId,
-      userId,
-      s3Bucket,
-      s3Key,
-    });
+    await processMeetingAudio(pipelineDeps, params);
 
-    expect(mockDb.proposal.create).toHaveBeenCalledTimes(1);
-    const proposalCall = mockDb.proposal.create.mock.calls[0]?.[0];
-    expect(proposalCall.data.actionType).toBe(ProposalActionType.SCHEDULE_MEETING);
-    expect(proposalCall.data.status).toBe(ProposalStatus.PENDING_APPROVAL);
-    expect(proposalCall.data.payload).toBeDefined();
+    expect(db.tables.proposal!).toHaveLength(1);
+    const proposal = db.tables.proposal![0]!;
+    expect(proposal.actionType).toBe(ProposalActionType.SCHEDULE_MEETING);
+    expect(proposal.status).toBe(ProposalStatus.PENDING_APPROVAL);
+    expect(proposal.payload).toBeDefined();
   });
 
-  it("Hard Invariant 5: raw audio is deleted from S3 according to retention policy", async () => {
-    await processMeetingAudio(pipelineDeps, {
-      meetingId,
-      userId,
-      s3Bucket,
-      s3Key,
-    });
+  it("Hard Invariant 5: raw audio is deleted from S3 by default", async () => {
+    await processMeetingAudio(pipelineDeps, params);
 
-    // S3 DeleteObjectCommand must have been sent
     const deleteCalls = mockS3.send.mock.calls.filter(
-      ([cmd]: any) => cmd.constructor.name === "DeleteObjectCommand",
+      ([cmd]) =>
+        (cmd as { constructor: { name: string } }).constructor.name === "DeleteObjectCommand",
     );
-    expect(deleteCalls.length).toBe(1);
-    expect(deleteCalls[0][0].input).toEqual({
+    expect(deleteCalls).toHaveLength(1);
+    expect((deleteCalls[0]![0] as { input: unknown }).input).toEqual({
       Bucket: s3Bucket,
       Key: s3Key,
     });
-
-    // DB audioDeletedAt must be updated
-    expect(mockDb.meeting.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: meetingId },
-        data: expect.objectContaining({
-          audioDeletedAt: expect.any(Date),
-        }),
-      }),
-    );
+    expect(meeting().audioDeletedAt).toBeInstanceOf(Date);
   });
 
-  it("Hard Invariant 7: usage events are logged for both ASR and LLM with real USD micros", async () => {
-    await processMeetingAudio(pipelineDeps, {
-      meetingId,
-      userId,
-      s3Bucket,
-      s3Key,
-    });
+  it("keeps the audio when the user opted into retention", async () => {
+    db.tables.userSettings![0]!.audioRetentionDays = 7;
 
-    const usageCalls = mockDb.usageEvent.create.mock.calls;
-    expect(usageCalls.length).toBe(2);
+    const result = await processMeetingAudio(pipelineDeps, params);
 
-    const asrEvent = usageCalls.find(
-      ([c]: any) => c.data.operationType === "AUDIO_TRANSCRIPTION",
-    )?.[0];
-    const llmEvent = usageCalls.find(
-      ([c]: any) => c.data.operationType === "LLM_ANALYSIS",
-    )?.[0];
-
-    expect(asrEvent).toBeDefined();
-    expect(asrEvent.data.unit).toBe("minutes");
-    expect(asrEvent.data.costMicros).toBeDefined();
-
-    expect(llmEvent).toBeDefined();
-    expect(llmEvent.data.unit).toBe("tokens");
-    expect(llmEvent.data.costMicros).toBeDefined();
+    expect(result.audioDeleted).toBe(false);
+    expect(meeting().audioDeletedAt).toBeNull();
   });
 
-  it("generates pgvector embeddings + EMBEDDING_GENERATION usage event when an embedding client is configured (ADR-016)", async () => {
-    mockDb.$executeRaw = vi.fn().mockResolvedValue(1);
+  it("Hard Invariant 7: usage events are logged for both ASR and LLM", async () => {
+    await processMeetingAudio(pipelineDeps, params);
+
+    expect(db.tables.usageEvent!).toHaveLength(2);
+    expect(usage("AUDIO_TRANSCRIPTION")[0]!.unit).toBe("minutes");
+    expect(usage("LLM_ANALYSIS")[0]!.unit).toBe("tokens");
+  });
+
+  it("generates pgvector embeddings + EMBEDDING_GENERATION usage event (ADR-016)", async () => {
     const embeddingClient = {
       providerName: "fake-embeddings",
-      embed: vi.fn().mockResolvedValue([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]]),
+      embed: vi.fn().mockResolvedValue([
+        [0.1, 0.2],
+        [0.3, 0.4],
+        [0.5, 0.6],
+        [0.7, 0.8],
+      ]),
     };
 
     await processMeetingAudio(
@@ -356,37 +291,26 @@ describe("Worker Pipeline (@dawwen/worker)", () => {
           },
         },
       },
-      { meetingId, userId, s3Bucket, s3Key },
+      params,
     );
 
-    // One raw INSERT per transcript segment
-    const insertCalls = mockDb.$executeRaw.mock.calls as unknown[][];
-    expect(insertCalls.length).toBeGreaterThan(0);
-
-    // Metering: embeddings are a metered paid operation (Invariant 7)
-    const usageCalls = mockDb.usageEvent.create.mock.calls;
-    const embeddingEvent = usageCalls.find(
-      ([c]: any) => c.data.operationType === "EMBEDDING_GENERATION",
-    )?.[0];
-    expect(embeddingEvent).toBeDefined();
-    expect(embeddingEvent.data.unit).toBe("tokens");
-    expect(embeddingEvent.data.quantity).toBeGreaterThan(0);
-    expect(Number(embeddingEvent.data.costMicros)).toBeGreaterThan(0);
+    expect(db.$executeRaw.mock.calls.length).toBeGreaterThan(0);
+    const [event] = usage("EMBEDDING_GENERATION");
+    expect(event!.unit).toBe("tokens");
+    expect(event!.quantity as number).toBeGreaterThan(0);
+    expect(Number(event!.costMicros)).toBeGreaterThan(0);
   });
 
   it("embedding failures are non-fatal: pipeline still completes (keyword search fallback)", async () => {
-    mockDb.$executeRaw = vi.fn().mockRejectedValue(new Error("pgvector down"));
+    db.$executeRaw.mockRejectedValue(new Error("pgvector down"));
     const embeddingClient = {
       providerName: "fake-embeddings",
       embed: vi.fn().mockResolvedValue([[0.1, 0.2]]),
     };
 
-    const result = await processMeetingAudio(
-      { ...pipelineDeps, embeddingClient },
-      { meetingId, userId, s3Bucket, s3Key },
-    );
+    const result = await processMeetingAudio({ ...pipelineDeps, embeddingClient }, params);
 
-    expect(result.meetingId).toBe(meetingId);
     expect(result.decisionsCount).toBeGreaterThan(0);
+    expect(meeting().status).toBe(MeetingStatus.REVIEW_PENDING);
   });
 });

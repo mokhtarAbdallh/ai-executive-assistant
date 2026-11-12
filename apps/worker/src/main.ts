@@ -7,7 +7,7 @@ import {
   loadWorkerConfig,
   type WorkerConfig,
 } from "@dawwen/config";
-import { getPrismaClient } from "@dawwen/db";
+import { getPrismaClient, CreditRepository } from "@dawwen/db";
 import { createSpeechToText } from "@dawwen/asr";
 import { createLlmClient, createEmbeddingClient } from "@dawwen/llm";
 import { prepareAudioForAsr } from "./audio.js";
@@ -154,6 +154,7 @@ async function main(): Promise<void> {
       llmClient,
       embeddingClient,
       pricingConfig: config.pricing,
+      credits: new CreditRepository(prisma),
       asrProviderName: config.asrProvider,
       llmProviderName: config.llmProvider,
       // Self-hosted ASR providers need 16 kHz mono WAV + chunked audio for real
@@ -193,6 +194,7 @@ async function main(): Promise<void> {
     const sweep = () =>
       sweepStuckMeetings(prisma, {
         stuckAfterMs: config.stuckMeetingMinutes * 60_000,
+        credits: new CreditRepository(prisma),
         logger: log,
       }).catch((err: unknown) =>
         log.warn("stuck-meeting sweep failed", { error: (err as Error).message }),

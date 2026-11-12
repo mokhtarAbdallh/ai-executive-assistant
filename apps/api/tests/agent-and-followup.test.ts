@@ -35,6 +35,7 @@ describe("Phase 5: Follow-up & Ask Chat Agent Invariants", () => {
     audioDurationSeconds: 1800,
     audioDeletedAt: null,
     failureReason: null,
+    creditHoldMicros: 0n,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
