@@ -1,7 +1,7 @@
 import type { S3Client } from "@aws-sdk/client-s3";
 import { GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import type { PrismaClient } from "@dawwen/db";
-import { saveSegmentEmbedding } from "@dawwen/db";
+import { saveSegmentEmbedding, CreditRepository } from "@dawwen/db";
 import {
   MeetingStatus,
   Priority,
@@ -573,22 +573,19 @@ export async function processMeetingAudio(
   const totalMeetingCostMicros = BigInt(customerPriceMicros + totalLlmCostMicros);
   if (prisma.creditLedger && totalMeetingCostMicros > 0n) {
     try {
-      await prisma.creditLedger.updateMany({
-        where: { userId },
-        data: {
-          balanceMicros: { decrement: totalMeetingCostMicros },
-        },
-      });
-      if (prisma.creditTransaction) {
-        await prisma.creditTransaction.create({
-          data: {
-            userId,
-            amountMicros: -totalMeetingCostMicros,
-            transactionType: "CREDIT_SETTLE",
-            description: `Usage cost for meeting: ${meeting.title}`,
-            referenceType: "meeting_usage",
-            referenceId: meetingId,
-          },
+      // Atomic, capped debit (ADR-022): the balance can never go negative; any
+      // uncovered amount is reported and noted on the ledger transaction.
+      const settled = await new CreditRepository(prisma).settleCredits(
+        { userId },
+        0n,
+        totalMeetingCostMicros,
+        `Usage cost for meeting: ${meeting.title}`,
+        meetingId,
+      );
+      if (settled.shortfallMicros > 0n) {
+        log.warn("meeting usage exceeded available credit; debit was capped", {
+          meetingId,
+          shortfallMicros: settled.shortfallMicros.toString(),
         });
       }
     } catch (settleErr) {
