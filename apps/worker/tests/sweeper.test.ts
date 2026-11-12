@@ -40,10 +40,7 @@ describe("Stuck meeting sweeper (ADR-019)", () => {
       where: { status: { in: string[] }; updatedAt: { lt: Date } };
       data: { status: string; failureReason: string };
     };
-    expect(args.where.status.in).toEqual([
-      MeetingStatus.TRANSCRIBING,
-      MeetingStatus.ANALYZING,
-    ]);
+    expect(args.where.status.in).toEqual([MeetingStatus.TRANSCRIBING, MeetingStatus.ANALYZING]);
     expect(args.where.updatedAt.lt.getTime()).toBeLessThanOrEqual(Date.now());
     expect(args.data.status).toBe(MeetingStatus.FAILED);
     expect(args.data.failureReason).toContain("timed out");
@@ -228,19 +225,14 @@ describe("Reminder dispatcher (ADR-020)", () => {
     });
 
     expect(sent).toBe(0);
-    expect(log.warn).toHaveBeenCalledWith(
-      "failed to dispatch reminder",
-      expect.anything(),
-    );
+    expect(log.warn).toHaveBeenCalledWith("failed to dispatch reminder", expect.anything());
     // Send-then-claim: a failed send must NOT mark the reminder SENT — the next
     // dispatch retries it while it is still SCHEDULED.
     expect(mockDb.reminder.updateMany).not.toHaveBeenCalled();
   });
 
   it("ConsoleEmailSender emits a stdout log and resolves a messageId", async () => {
-    const writeSpy = vi
-      .spyOn(process.stdout, "write")
-      .mockImplementation(() => true);
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {
       const result = await new ConsoleEmailSender().sendEmail({
         to: "x@y.z",

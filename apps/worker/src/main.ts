@@ -38,18 +38,25 @@ const DEFAULT_ASR_HTTP_OPTIONS: AsrHttpOptions = {
   timeoutMs: 600_000,
 };
 
-function parseAsrHttpOptions(raw: string | undefined, log: {
-  warn: (msg: string, meta?: Record<string, unknown>) => void;
-}): AsrHttpOptions {
+function parseAsrHttpOptions(
+  raw: string | undefined,
+  log: {
+    warn: (msg: string, meta?: Record<string, unknown>) => void;
+  },
+): AsrHttpOptions {
   if (!raw) return DEFAULT_ASR_HTTP_OPTIONS;
   try {
     const parsed = JSON.parse(raw) as Partial<AsrHttpOptions>;
     const chunkSeconds =
-      typeof parsed.chunkSeconds === "number" && parsed.chunkSeconds >= 5 && parsed.chunkSeconds <= 120
+      typeof parsed.chunkSeconds === "number" &&
+      parsed.chunkSeconds >= 5 &&
+      parsed.chunkSeconds <= 120
         ? Math.round(parsed.chunkSeconds)
         : DEFAULT_ASR_HTTP_OPTIONS.chunkSeconds;
     const timeoutMs =
-      typeof parsed.timeoutMs === "number" && parsed.timeoutMs >= 5_000 && parsed.timeoutMs <= 3_600_000
+      typeof parsed.timeoutMs === "number" &&
+      parsed.timeoutMs >= 5_000 &&
+      parsed.timeoutMs <= 3_600_000
         ? Math.round(parsed.timeoutMs)
         : DEFAULT_ASR_HTTP_OPTIONS.timeoutMs;
     return { chunkSeconds, timeoutMs };
@@ -203,9 +210,8 @@ async function main(): Promise<void> {
         })
       : undefined;
     const dispatch = () =>
-      dispatchDueReminders(prisma, { logger: log, sender: emailSender }).catch(
-        (err: unknown) =>
-          log.warn("reminder dispatch failed", { error: (err as Error).message }),
+      dispatchDueReminders(prisma, { logger: log, sender: emailSender }).catch((err: unknown) =>
+        log.warn("reminder dispatch failed", { error: (err as Error).message }),
       );
     void dispatch();
     housekeepingTimers.push(setInterval(dispatch, config.reminderDispatchSeconds * 1_000));
@@ -216,4 +222,3 @@ async function main(): Promise<void> {
 }
 
 void main();
-

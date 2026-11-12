@@ -1,12 +1,6 @@
 import type { PrismaClient } from "@dawwen/db";
-import {
-  MeetingStatus,
-  ReminderStatus,
-} from "@dawwen/db";
-import type {
-  EmailInputLike,
-  ReminderEmailSender,
-} from "./reminders.js";
+import { MeetingStatus, ReminderStatus } from "@dawwen/db";
+import type { EmailInputLike, ReminderEmailSender } from "./reminders.js";
 
 export interface SweeperOptions {
   /** Meetings in TRANSCRIBING/ANALYZING older than this are marked FAILED. */

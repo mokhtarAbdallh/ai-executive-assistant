@@ -2,11 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { SqsAudioConsumer } from "../src/consumer.js";
 import { FakeSpeechToText } from "@dawwen/asr";
 import { FakeLlmClient } from "@dawwen/llm";
-import {
-  MeetingStatus,
-  ProposalStatus,
-  ProposalActionType,
-} from "@dawwen/db";
+import { MeetingStatus, ProposalStatus, ProposalActionType } from "@dawwen/db";
 
 describe("LocalStack S3 → SQS → Worker → DB Integration Flow", () => {
   it("processes an S3 ObjectCreated event end-to-end and cleans up SQS and S3", async () => {
