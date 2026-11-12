@@ -525,6 +525,11 @@ export async function updateDecision(
   return data;
 }
 
+/** Re-queues a FAILED meeting for processing (ADR-023). Throws ApiError on refusal. */
+export async function retryMeetingProcessing(meetingId: string): Promise<void> {
+  await apiFetch(`/api/meetings/${meetingId}/retry`, { method: "POST" });
+}
+
 export async function approveAllMeetingItems(meetingId: string): Promise<MeetingSummary> {
   try {
     const res = await authFetch(`/api/meetings/${meetingId}/approve`, { method: "POST" });
@@ -1430,7 +1435,7 @@ const DEMO_USAGE_EVENTS: UsageEventItem[] = [
 let DEMO_SETTINGS: UserSettings = {
   language: "ar",
   timezone: "Africa/Cairo",
-  audioRetentionDays: 7,
+  audioRetentionDays: 0,
 };
 
 export async function fetchBillingBalance(): Promise<BillingBalance> {

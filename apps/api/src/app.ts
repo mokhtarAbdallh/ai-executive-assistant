@@ -27,6 +27,7 @@ import { proposalRoutes } from "./routes/proposals.js";
 import { calendarRoutes } from "./routes/calendar.js";
 import { uploadRoutes } from "./routes/upload.js";
 import { meetingsRoutes } from "./routes/meetings.js";
+import { SqsAudioQueue, type AudioQueue } from "./services/audio-queue.js";
 import { chatRoutes } from "./routes/chat.js";
 import { searchRoutes } from "./routes/search.js";
 import { followUpRoutes } from "./routes/follow-up.js";
@@ -56,6 +57,8 @@ export interface AppOptions {
   dataManagementService?: DataManagementService;
   /** Optional embedding client for semantic (pgvector) search, ADR-016. */
   embeddingClient?: EmbeddingClient;
+  /** Queue used to re-process failed meetings; defaults to SQS from AUDIO_QUEUE_URL. */
+  audioQueue?: AudioQueue;
 }
 
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
@@ -186,6 +189,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         decisionRepository,
         prisma,
         dataManagementService,
+        audioQueue: opts.audioQueue ?? SqsAudioQueue.fromEnv(),
+        bucketName: audioBucket,
       });
       await api.register(chatRoutes, { agentService });
       await api.register(searchRoutes, { searchService });

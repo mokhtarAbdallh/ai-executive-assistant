@@ -102,7 +102,7 @@ export interface Proposal {
   meetingId: string | null;
   actionType: "SCHEDULE_MEETING" | "DRAFT_EMAIL" | "SEND_REMINDER" | "CREATE_TASK";
   payload: ProposalPayload;
-  status: "PENDING_APPROVAL" | "APPROVED" | "EXECUTED" | "REJECTED" | "FAILED";
+  status: "PENDING_APPROVAL" | "APPROVED" | "EXECUTING" | "EXECUTED" | "REJECTED" | "FAILED";
   reason: string | null;
   createdAt: string;
 }
@@ -147,6 +147,8 @@ export interface MeetingSummary {
   language: string;
   audioDurationSeconds: number | null;
   scheduledStart: string | null;
+  failureReason?: string | null;
+  audioDeletedAt?: string | null;
   createdAt: string;
   updatedAt: string;
   _count?: {

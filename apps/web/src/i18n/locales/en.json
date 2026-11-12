@@ -276,6 +276,14 @@
       "hint": "These proposals don't run until you approve them in the proposals inbox.",
       "emptyTitle": "No proposals for this meeting",
       "emptyBody": "When you ask Dawwen to schedule a meeting or send a message, the proposal appears here."
+    },
+    "processing": {
+      "failedTitle": "Processing stopped",
+      "failedBody": "Something went wrong while transcribing or analysing this meeting. You were not charged.",
+      "retry": "Try again",
+      "retrying": "Restarting…",
+      "retryQueued": "The meeting is back in the queue and will be processed shortly",
+      "audioGone": "The original audio was deleted, so you need to upload the recording again."
     }
   },
   "calendar": {

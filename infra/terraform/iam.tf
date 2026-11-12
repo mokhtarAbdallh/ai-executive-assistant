@@ -82,6 +82,12 @@ data "aws_iam_policy_document" "api" {
     actions   = ["kms:GenerateDataKey", "kms:Decrypt"]
     resources = [aws_kms_key.audio.arn]
   }
+
+  # Re-queue failed meetings (POST /api/meetings/:id/retry, ADR-023).
+  statement {
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.audio_processing.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "api" {

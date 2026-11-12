@@ -7,10 +7,11 @@ import type {
   DecisionRepository,
   Prisma,
 } from "@dawwen/db";
-import { MeetingStatus, Priority } from "@dawwen/db";
+import { CrossTenantAccessViolationError, MeetingStatus, Priority } from "@dawwen/db";
 import { FakeSpeechToText } from "@dawwen/asr";
 import { FakeLlmClient } from "@dawwen/llm";
 import type { DataManagementService } from "../services/data-management.js";
+import type { AudioQueue } from "../services/audio-queue.js";
 
 const CreateMeetingSchema = z.object({
   title: z.string().trim().min(1).max(255),
@@ -44,7 +45,12 @@ export interface MeetingsRoutesOptions {
   decisionRepository: DecisionRepository;
   prisma: PrismaClient;
   dataManagementService?: DataManagementService;
+  /** Re-queues failed meetings (ADR-023). Without it, retry answers 503. */
+  audioQueue?: AudioQueue;
+  bucketName?: string;
 }
+
+const MeetingIdParamsSchema = z.object({ id: z.string().min(1) });
 
 export async function meetingsRoutes(fastify: FastifyInstance, options: MeetingsRoutesOptions) {
   const { meetingRepository, prisma } = options;
@@ -269,6 +275,75 @@ export async function meetingsRoutes(fastify: FastifyInstance, options: Meetings
       });
 
       return reply.send(updated);
+    },
+  );
+
+  // Retry a FAILED meeting: back to QUEUED and onto the processing queue (ADR-023).
+  // The worker starts from a clean slate, so a retry never duplicates results.
+  fastify.post(
+    "/meetings/:id/retry",
+    { preHandler: [fastify.authenticate] },
+    async (request, reply) => {
+      const params = MeetingIdParamsSchema.safeParse(request.params);
+      if (!params.success) return reply.status(400).send({ error: "Validation failed" });
+      const user = request.user!;
+      const meetingId = params.data.id;
+
+      let meeting;
+      try {
+        meeting = await meetingRepository.findById({ userId: user.id }, meetingId);
+      } catch (err) {
+        if (err instanceof CrossTenantAccessViolationError) meeting = null;
+        else throw err;
+      }
+      if (!meeting) return reply.status(404).send({ error: "Meeting not found" });
+
+      if (!options.audioQueue) {
+        return reply
+          .status(503)
+          .send({ error: "queue_unavailable", message: "Processing queue is not configured" });
+      }
+      if (meeting.status !== MeetingStatus.FAILED) {
+        return reply
+          .status(409)
+          .send({ error: "not_failed", message: "Only failed meetings can be retried" });
+      }
+      if (!meeting.audioS3Key || meeting.audioDeletedAt) {
+        return reply.status(409).send({
+          error: "audio_unavailable",
+          message: "The original audio is no longer stored; upload it again",
+        });
+      }
+
+      const claimed = await prisma.meeting.updateMany({
+        where: { id: meetingId, userId: user.id, status: MeetingStatus.FAILED },
+        data: { status: MeetingStatus.QUEUED, failureReason: null },
+      });
+      if (claimed.count === 0) {
+        return reply
+          .status(409)
+          .send({ error: "not_failed", message: "Only failed meetings can be retried" });
+      }
+
+      try {
+        await options.audioQueue.enqueue({
+          meetingId,
+          userId: user.id,
+          s3Bucket: options.bucketName || process.env.AUDIO_BUCKET || "meeting-assistant-audio",
+          s3Key: meeting.audioS3Key,
+        });
+      } catch (err) {
+        request.log.error({ meetingId, err: (err as Error).message }, "retry enqueue failed");
+        await prisma.meeting.updateMany({
+          where: { id: meetingId, status: MeetingStatus.QUEUED },
+          data: { status: MeetingStatus.FAILED, failureReason: "Could not queue the retry" },
+        });
+        return reply
+          .status(503)
+          .send({ error: "queue_unavailable", message: "Could not queue the retry" });
+      }
+
+      return reply.status(202).send({ id: meetingId, status: MeetingStatus.QUEUED });
     },
   );
 
