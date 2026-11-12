@@ -11,8 +11,12 @@ import {
 
 describe("Proposal State Machine (Hard Invariant 1: Human-in-the-loop)", () => {
   it("allows transition from PENDING_APPROVAL to APPROVED or REJECTED", () => {
-    expect(canTransitionProposal(ProposalStatus.PENDING_APPROVAL, ProposalStatus.APPROVED)).toBe(true);
-    expect(canTransitionProposal(ProposalStatus.PENDING_APPROVAL, ProposalStatus.REJECTED)).toBe(true);
+    expect(canTransitionProposal(ProposalStatus.PENDING_APPROVAL, ProposalStatus.APPROVED)).toBe(
+      true,
+    );
+    expect(canTransitionProposal(ProposalStatus.PENDING_APPROVAL, ProposalStatus.REJECTED)).toBe(
+      true,
+    );
   });
 
   it("strictly forbids executing a proposal directly from PENDING_APPROVAL", () => {
@@ -45,7 +49,9 @@ describe("Proposal State Machine (Hard Invariant 1: Human-in-the-loop)", () => {
     expect(canTransitionProposal(ProposalStatus.REJECTED, ProposalStatus.APPROVED)).toBe(false);
     expect(canTransitionProposal(ProposalStatus.REJECTED, ProposalStatus.EXECUTED)).toBe(false);
     expect(canTransitionProposal(ProposalStatus.EXECUTED, ProposalStatus.APPROVED)).toBe(false);
-    expect(canTransitionProposal(ProposalStatus.EXECUTED, ProposalStatus.PENDING_APPROVAL)).toBe(false);
+    expect(canTransitionProposal(ProposalStatus.EXECUTED, ProposalStatus.PENDING_APPROVAL)).toBe(
+      false,
+    );
 
     expect(() =>
       validateProposalTransition(ProposalStatus.REJECTED, ProposalStatus.APPROVED),

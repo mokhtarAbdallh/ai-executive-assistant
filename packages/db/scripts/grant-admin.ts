@@ -12,7 +12,10 @@ import { PrismaClient } from "@prisma/client";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const email = args.find((a) => !a.startsWith("--"))?.trim().toLowerCase();
+  const email = args
+    .find((a) => !a.startsWith("--"))
+    ?.trim()
+    .toLowerCase();
   const revoke = args.includes("--revoke");
 
   if (!email) {

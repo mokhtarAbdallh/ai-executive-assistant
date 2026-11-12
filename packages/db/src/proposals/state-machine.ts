@@ -15,7 +15,9 @@ export class InvalidProposalTransitionError extends Error {
 }
 
 export class UnauthorizedProposalExecutionError extends Error {
-  constructor(message = "Unauthorized: Side effects may never execute directly from PENDING_APPROVAL.") {
+  constructor(
+    message = "Unauthorized: Side effects may never execute directly from PENDING_APPROVAL.",
+  ) {
     super(message);
     this.name = "UnauthorizedProposalExecutionError";
   }

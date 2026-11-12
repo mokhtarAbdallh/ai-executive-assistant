@@ -126,9 +126,7 @@ describe("Phase 5: Follow-up & Ask Chat Agent Invariants", () => {
     transcriptSegment: {
       findMany: vi.fn().mockImplementation(({ where }: any) => {
         const orClauses = where?.OR || [];
-        const terms = orClauses
-          .map((c: any) => c.text?.contains?.toLowerCase())
-          .filter(Boolean);
+        const terms = orClauses.map((c: any) => c.text?.contains?.toLowerCase()).filter(Boolean);
         return Promise.resolve(
           testSegments.filter((s) => {
             if (terms.length === 0) return true;

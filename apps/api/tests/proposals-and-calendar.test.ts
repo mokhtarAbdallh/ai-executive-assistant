@@ -27,10 +27,20 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
     user: {
       findUnique: vi.fn().mockImplementation(({ where }: { where: { id: string } }) => {
         if (where.id === aliceId) {
-          return Promise.resolve({ id: aliceId, email: "alice@dawwen.ai", name: "Alice", role: Role.OWNER });
+          return Promise.resolve({
+            id: aliceId,
+            email: "alice@dawwen.ai",
+            name: "Alice",
+            role: Role.OWNER,
+          });
         }
         if (where.id === bobId) {
-          return Promise.resolve({ id: bobId, email: "bob@dawwen.ai", name: "Bob", role: Role.OWNER });
+          return Promise.resolve({
+            id: bobId,
+            email: "bob@dawwen.ai",
+            name: "Bob",
+            role: Role.OWNER,
+          });
         }
         return Promise.resolve(null);
       }),
@@ -58,33 +68,39 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
       findUnique: vi.fn().mockImplementation(({ where }: { where: { id: string } }) => {
         return Promise.resolve(proposalsStore.get(where.id) || null);
       }),
-      findMany: vi.fn().mockImplementation(({ where }: { where: { userId: string; status?: ProposalStatus } }) => {
-        const results = Array.from(proposalsStore.values()).filter((p) => {
-          if (p.userId !== where.userId) return false;
-          if (where.status && p.status !== where.status) return false;
-          return true;
-        });
-        return Promise.resolve(results);
-      }),
-      update: vi.fn().mockImplementation(({ where, data }: { where: { id: string }; data: any }) => {
-        const record = proposalsStore.get(where.id);
-        if (!record) throw new Error("Proposal not found");
-        const updated: Proposal = {
-          ...record,
-          ...data,
-          updatedAt: new Date(),
-        };
-        proposalsStore.set(where.id, updated);
-        return Promise.resolve(updated);
-      }),
+      findMany: vi
+        .fn()
+        .mockImplementation(({ where }: { where: { userId: string; status?: ProposalStatus } }) => {
+          const results = Array.from(proposalsStore.values()).filter((p) => {
+            if (p.userId !== where.userId) return false;
+            if (where.status && p.status !== where.status) return false;
+            return true;
+          });
+          return Promise.resolve(results);
+        }),
+      update: vi
+        .fn()
+        .mockImplementation(({ where, data }: { where: { id: string }; data: any }) => {
+          const record = proposalsStore.get(where.id);
+          if (!record) throw new Error("Proposal not found");
+          const updated: Proposal = {
+            ...record,
+            ...data,
+            updatedAt: new Date(),
+          };
+          proposalsStore.set(where.id, updated);
+          return Promise.resolve(updated);
+        }),
     },
     calendarConnection: {
-      findFirst: vi.fn().mockImplementation(({ where }: { where: { userId: string; provider: string } }) => {
-        const found = Array.from(connectionsStore.values()).find(
-          (c) => c.userId === where.userId && c.provider === where.provider,
-        );
-        return Promise.resolve(found || null);
-      }),
+      findFirst: vi
+        .fn()
+        .mockImplementation(({ where }: { where: { userId: string; provider: string } }) => {
+          const found = Array.from(connectionsStore.values()).find(
+            (c) => c.userId === where.userId && c.provider === where.provider,
+          );
+          return Promise.resolve(found || null);
+        }),
       findUnique: vi.fn().mockImplementation(({ where }: { where: { id: string } }) => {
         return Promise.resolve(connectionsStore.get(where.id) || null);
       }),
@@ -104,21 +120,25 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
         connectionsStore.set(id, record);
         return Promise.resolve(record);
       }),
-      update: vi.fn().mockImplementation(({ where, data }: { where: { id: string }; data: any }) => {
-        const record = connectionsStore.get(where.id);
-        if (!record) throw new Error("Connection not found");
-        const updated = { ...record, ...data, updatedAt: new Date() };
-        connectionsStore.set(where.id, updated);
-        return Promise.resolve(updated);
-      }),
-      deleteMany: vi.fn().mockImplementation(({ where }: { where: { userId: string; provider: string } }) => {
-        for (const [id, conn] of connectionsStore.entries()) {
-          if (conn.userId === where.userId && conn.provider === where.provider) {
-            connectionsStore.delete(id);
+      update: vi
+        .fn()
+        .mockImplementation(({ where, data }: { where: { id: string }; data: any }) => {
+          const record = connectionsStore.get(where.id);
+          if (!record) throw new Error("Connection not found");
+          const updated = { ...record, ...data, updatedAt: new Date() };
+          connectionsStore.set(where.id, updated);
+          return Promise.resolve(updated);
+        }),
+      deleteMany: vi
+        .fn()
+        .mockImplementation(({ where }: { where: { userId: string; provider: string } }) => {
+          for (const [id, conn] of connectionsStore.entries()) {
+            if (conn.userId === where.userId && conn.provider === where.provider) {
+              connectionsStore.delete(id);
+            }
           }
-        }
-        return Promise.resolve({ count: 1 });
-      }),
+          return Promise.resolve({ count: 1 });
+        }),
     },
     meeting: {
       findMany: vi.fn().mockResolvedValue([]),
@@ -213,9 +233,9 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
     });
 
     // Attempting to execute an already rejected proposal must throw ProposalNotApprovedError
-    await expect(
-      executor.approveAndExecute({ userId: aliceId }, rejectedId),
-    ).rejects.toThrow(ProposalNotApprovedError);
+    await expect(executor.approveAndExecute({ userId: aliceId }, rejectedId)).rejects.toThrow(
+      ProposalNotApprovedError,
+    );
   });
 
   it("Unauthenticated request to approve proposal is rejected with 401 Unauthorized", async () => {

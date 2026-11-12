@@ -29,10 +29,7 @@ export interface BillingRoutesOptions {
   prisma: PrismaClient;
 }
 
-export async function billingRoutes(
-  fastify: FastifyInstance,
-  options: BillingRoutesOptions,
-) {
+export async function billingRoutes(fastify: FastifyInstance, options: BillingRoutesOptions) {
   const { creditRepository, paymentProvider, prisma } = options;
 
   // 1. GET /api/billing/balance
@@ -80,107 +77,99 @@ export async function billingRoutes(
   );
 
   // 3. GET /api/billing/usage
-  fastify.get(
-    "/billing/usage",
-    { preHandler: [fastify.authenticate] },
-    async (request, reply) => {
-      const user = request.user!;
-      const query = request.query as { meetingId?: string; limit?: string; offset?: string };
-      const limit = query.limit ? parseInt(query.limit, 10) : 50;
-      const offset = query.offset ? parseInt(query.offset, 10) : 0;
+  fastify.get("/billing/usage", { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    const user = request.user!;
+    const query = request.query as { meetingId?: string; limit?: string; offset?: string };
+    const limit = query.limit ? parseInt(query.limit, 10) : 50;
+    const offset = query.offset ? parseInt(query.offset, 10) : 0;
 
-      const [summary, events] = await Promise.all([
-        creditRepository.getUsageSummary({ userId: user.id }),
-        creditRepository.listUsageEvents(
-          { userId: user.id },
-          { meetingId: query.meetingId, limit, offset },
-        ),
-      ]);
+    const [summary, events] = await Promise.all([
+      creditRepository.getUsageSummary({ userId: user.id }),
+      creditRepository.listUsageEvents(
+        { userId: user.id },
+        { meetingId: query.meetingId, limit, offset },
+      ),
+    ]);
 
-      return reply.send({
-        summary: {
-          ...summary,
-          totalCostMicros: summary.totalCostMicros.toString(),
-        },
-        events: events.map((ev) => ({
-          ...ev,
-          costMicros: ev.costMicros.toString(),
-          costDollars: Number(ev.costMicros) / 1_000_000,
-        })),
-      });
-    },
-  );
+    return reply.send({
+      summary: {
+        ...summary,
+        totalCostMicros: summary.totalCostMicros.toString(),
+      },
+      events: events.map((ev) => ({
+        ...ev,
+        costMicros: ev.costMicros.toString(),
+        costDollars: Number(ev.costMicros) / 1_000_000,
+      })),
+    });
+  });
 
   // 4. POST /api/billing/topup — platform admins only (ADR-022).
   // Regular users cannot credit any ledger, including their own; payments are
   // confirmed out-of-band (InstaPay / transfer) and then credited by an admin.
-  fastify.post(
-    "/billing/topup",
-    { preHandler: [fastify.authenticate] },
-    async (request, reply) => {
-      // Re-read the flag on every call so a revoked admin's old token stops working.
-      const caller = await prisma.user.findUnique({
-        where: { id: request.user!.id },
-        select: { isPlatformAdmin: true },
+  fastify.post("/billing/topup", { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    // Re-read the flag on every call so a revoked admin's old token stops working.
+    const caller = await prisma.user.findUnique({
+      where: { id: request.user!.id },
+      select: { isPlatformAdmin: true },
+    });
+    if (!caller?.isPlatformAdmin) {
+      return reply.status(403).send({
+        error: "forbidden",
+        message: "Only a platform admin can add credit.",
       });
-      if (!caller?.isPlatformAdmin) {
-        return reply.status(403).send({
-          error: "forbidden",
-          message: "Only a platform admin can add credit.",
-        });
-      }
+    }
 
-      const parsed = TopupBodySchema.safeParse(request.body);
-      if (!parsed.success) {
-        return reply.status(400).send({
-          error: "Validation failed",
-          details: parsed.error.format(),
-        });
-      }
-
-      const amountMicros =
-        parsed.data.amountDollars !== undefined
-          ? BigInt(Math.round(parsed.data.amountDollars * 1_000_000))
-          : BigInt(parsed.data.amountMicros!);
-
-      if (amountMicros <= 0n || amountMicros > MAX_TOPUP_MICROS) {
-        return reply.status(400).send({
-          error: "Invalid amount",
-          message: "Top-up amount must be positive and at most $100,000.",
-        });
-      }
-
-      const target = await prisma.user.findUnique({
-        where: { email: parsed.data.userEmail },
-        select: { id: true },
+    const parsed = TopupBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: "Validation failed",
+        details: parsed.error.format(),
       });
-      if (!target) {
-        return reply.status(404).send({ error: "not_found", message: "User not found" });
-      }
+    }
 
-      const result = await paymentProvider.topup({
-        userId: target.id,
-        amountMicros,
-        reference: parsed.data.reference,
-        description:
-          parsed.data.description ??
-          `Manual top-up by admin ${request.user!.id}${parsed.data.reference ? ` (ref: ${parsed.data.reference})` : ""}`,
+    const amountMicros =
+      parsed.data.amountDollars !== undefined
+        ? BigInt(Math.round(parsed.data.amountDollars * 1_000_000))
+        : BigInt(parsed.data.amountMicros!);
+
+    if (amountMicros <= 0n || amountMicros > MAX_TOPUP_MICROS) {
+      return reply.status(400).send({
+        error: "Invalid amount",
+        message: "Top-up amount must be positive and at most $100,000.",
       });
+    }
 
-      request.log.info(
-        { adminId: request.user!.id, targetUserId: target.id, amountMicros: amountMicros.toString() },
-        "admin credit top-up",
-      );
+    const target = await prisma.user.findUnique({
+      where: { email: parsed.data.userEmail },
+      select: { id: true },
+    });
+    if (!target) {
+      return reply.status(404).send({ error: "not_found", message: "User not found" });
+    }
 
-      return reply.send({
-        success: true,
-        transaction: {
-          ...result,
-          amountMicros: result.amountMicros.toString(),
-          newBalanceMicros: result.newBalanceMicros.toString(),
-          formattedNewBalance: `$${(Number(result.newBalanceMicros) / 1_000_000).toFixed(2)}`,
-        },
-      });
-    },
-  );
+    const result = await paymentProvider.topup({
+      userId: target.id,
+      amountMicros,
+      reference: parsed.data.reference,
+      description:
+        parsed.data.description ??
+        `Manual top-up by admin ${request.user!.id}${parsed.data.reference ? ` (ref: ${parsed.data.reference})` : ""}`,
+    });
+
+    request.log.info(
+      { adminId: request.user!.id, targetUserId: target.id, amountMicros: amountMicros.toString() },
+      "admin credit top-up",
+    );
+
+    return reply.send({
+      success: true,
+      transaction: {
+        ...result,
+        amountMicros: result.amountMicros.toString(),
+        newBalanceMicros: result.newBalanceMicros.toString(),
+        formattedNewBalance: `$${(Number(result.newBalanceMicros) / 1_000_000).toFixed(2)}`,
+      },
+    });
+  });
 }

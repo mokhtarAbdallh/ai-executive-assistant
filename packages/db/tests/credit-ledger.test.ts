@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
-import { CreditRepository, InsufficientBalanceError } from "../src/repositories/credit.repository.js";
+import {
+  CreditRepository,
+  InsufficientBalanceError,
+} from "../src/repositories/credit.repository.js";
 
 describe("Credit Ledger (Usage & Balance Invariant)", () => {
   const context = { userId: "user-test-credit-1" };

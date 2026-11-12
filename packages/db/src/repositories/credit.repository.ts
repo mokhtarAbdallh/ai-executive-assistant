@@ -1,10 +1,13 @@
-import type { PrismaClient} from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
 import { CreditTransactionType } from "@prisma/client";
 import type { TenantContext } from "./base.js";
 import { reserveCreditsAtomic, settleCreditsAtomic } from "../credit.sql.js";
 
 export class InsufficientBalanceError extends Error {
-  constructor(public readonly availableMicros: bigint, public readonly requestedMicros: bigint) {
+  constructor(
+    public readonly availableMicros: bigint,
+    public readonly requestedMicros: bigint,
+  ) {
     super(
       `Insufficient credit balance: available ${availableMicros} micros, requested ${requestedMicros} micros.`,
     );
@@ -205,10 +208,7 @@ export class CreditRepository {
     });
   }
 
-  async listTransactions(
-    context: TenantContext,
-    options?: { limit?: number; offset?: number },
-  ) {
+  async listTransactions(context: TenantContext, options?: { limit?: number; offset?: number }) {
     return this.prisma.creditTransaction.findMany({
       where: { userId: context.userId },
       orderBy: { createdAt: "desc" },
@@ -250,10 +250,7 @@ export class CreditRepository {
       totalCostMicros += ev.costMicros;
       if (ev.operationType === "AUDIO_TRANSCRIPTION" && ev.unit === "minutes") {
         totalAudioMinutes += ev.quantity;
-      } else if (
-        ev.operationType === "LLM_ANALYSIS" ||
-        ev.operationType.startsWith("LLM_")
-      ) {
+      } else if (ev.operationType === "LLM_ANALYSIS" || ev.operationType.startsWith("LLM_")) {
         totalLlmTokens += ev.quantity;
       }
     }
@@ -267,4 +264,3 @@ export class CreditRepository {
     };
   }
 }
-

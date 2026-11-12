@@ -94,15 +94,23 @@ describe("Tenant Isolation Invariant: A user can never read or modify another us
       payload: { summary: "Followup call" },
     };
     // Mirrors Postgres semantics: the conditional UPDATE only matches the owner's row.
-    const mockUpdateMany = vi.fn().mockImplementation(
-      ({ where, data }: { where: { userId: string; status: { in: ProposalStatus[] } }; data: { status: ProposalStatus } }) => {
-        if (where.userId !== record.userId || !where.status.in.includes(record.status)) {
-          return Promise.resolve({ count: 0 });
-        }
-        record.status = data.status;
-        return Promise.resolve({ count: 1 });
-      },
-    );
+    const mockUpdateMany = vi
+      .fn()
+      .mockImplementation(
+        ({
+          where,
+          data,
+        }: {
+          where: { userId: string; status: { in: ProposalStatus[] } };
+          data: { status: ProposalStatus };
+        }) => {
+          if (where.userId !== record.userId || !where.status.in.includes(record.status)) {
+            return Promise.resolve({ count: 0 });
+          }
+          record.status = data.status;
+          return Promise.resolve({ count: 1 });
+        },
+      );
     const mockPrisma = {
       proposal: {
         findUnique: vi.fn().mockImplementation(() => Promise.resolve({ ...record })),

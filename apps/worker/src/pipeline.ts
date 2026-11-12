@@ -2,12 +2,7 @@ import type { S3Client } from "@aws-sdk/client-s3";
 import { GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import type { PrismaClient } from "@dawwen/db";
 import { saveSegmentEmbedding, CreditRepository } from "@dawwen/db";
-import {
-  MeetingStatus,
-  Priority,
-  ProposalStatus,
-  ProposalActionType,
-} from "@dawwen/db";
+import { MeetingStatus, Priority, ProposalStatus, ProposalActionType } from "@dawwen/db";
 import type { SpeechToText, TranscribeOptions, TranscriptChunk } from "@dawwen/asr";
 import { standardizeArabicTerms } from "@dawwen/asr";
 import type { LlmClient, TranscriptContext, EmbeddingClient } from "@dawwen/llm";
@@ -62,7 +57,15 @@ export async function processMeetingAudio(
   deps: PipelineDependencies,
   params: ProcessMeetingParams,
 ): Promise<PipelineResult> {
-  const { prisma, s3Client, asrClient, llmClient, pricingConfig, asrProviderName, llmProviderName } = deps;
+  const {
+    prisma,
+    s3Client,
+    asrClient,
+    llmClient,
+    pricingConfig,
+    asrProviderName,
+    llmProviderName,
+  } = deps;
   const { meetingId, userId, s3Bucket, s3Key } = params;
   const log = deps.logger ?? {
     info: () => {},
@@ -87,7 +90,10 @@ export async function processMeetingAudio(
   }
 
   // Idempotency: if already completed or analyzing with existing results, avoid duplicate work
-  if (meeting.status === MeetingStatus.APPROVED || meeting.status === MeetingStatus.REVIEW_PENDING) {
+  if (
+    meeting.status === MeetingStatus.APPROVED ||
+    meeting.status === MeetingStatus.REVIEW_PENDING
+  ) {
     log.info("meeting already processed, skipping", { meetingId, status: meeting.status });
     return {
       meetingId,
@@ -162,9 +168,7 @@ export async function processMeetingAudio(
       throw new Error(`Empty audio body from S3: s3://${s3Bucket}/${s3Key}`);
     }
 
-    const streamToBuffer = async (
-      stream: AsyncIterable<Uint8Array | string>,
-    ): Promise<Buffer> => {
+    const streamToBuffer = async (stream: AsyncIterable<Uint8Array | string>): Promise<Buffer> => {
       const chunks: Uint8Array[] = [];
       for await (const chunk of stream) {
         chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
@@ -172,9 +176,7 @@ export async function processMeetingAudio(
       return Buffer.concat(chunks);
     };
 
-    audioBuffer = await streamToBuffer(
-      s3Response.Body as AsyncIterable<Uint8Array | string>,
-    );
+    audioBuffer = await streamToBuffer(s3Response.Body as AsyncIterable<Uint8Array | string>);
   } catch (err) {
     await prisma.meeting.update({
       where: { id: meetingId },
@@ -205,7 +207,9 @@ export async function processMeetingAudio(
 
   let asrResult;
   if (prepare.chunks && prepare.chunks.length > 1 && asrClient.transcribeChunked) {
-    log.info("using chunked transcription for real timestamps", { chunkCount: prepare.chunks.length });
+    log.info("using chunked transcription for real timestamps", {
+      chunkCount: prepare.chunks.length,
+    });
     asrResult = await asrClient.transcribeChunked(prepare.chunks, transcribeOptions);
   } else {
     asrResult = await asrClient.transcribe(prepare.buffer, transcribeOptions);
@@ -293,10 +297,13 @@ export async function processMeetingAudio(
       });
     } catch (embedErr) {
       // Semantic search is best-effort: keyword search keeps working without it.
-      log.warn("embedding generation failed; semantic search will be unavailable for this meeting", {
-        error: (embedErr as Error).message,
-        meetingId,
-      });
+      log.warn(
+        "embedding generation failed; semantic search will be unavailable for this meeting",
+        {
+          error: (embedErr as Error).message,
+          meetingId,
+        },
+      );
     }
   }
 
@@ -304,8 +311,7 @@ export async function processMeetingAudio(
   const asrCostPerMinute =
     pricingConfig.providerCosts.asrPerAudioMinuteMicros[asrProviderName] ?? 0;
   const asrCostMicros = asrCostPerMinute * audioMinutes;
-  const customerPriceMicros =
-    pricingConfig.customerPricePerAudioMinuteMicros * audioMinutes;
+  const customerPriceMicros = pricingConfig.customerPricePerAudioMinuteMicros * audioMinutes;
 
   await prisma.usageEvent.create({
     data: {
@@ -357,12 +363,8 @@ export async function processMeetingAudio(
   const outputCostPerMillion =
     pricingConfig.providerCosts.llmPerMillionOutputTokensMicros[llmProviderName] ?? 0;
 
-  const inputCostMicros = Math.round(
-    (llmResult.inputTokens * inputCostPerMillion) / 1_000_000,
-  );
-  const outputCostMicros = Math.round(
-    (llmResult.outputTokens * outputCostPerMillion) / 1_000_000,
-  );
+  const inputCostMicros = Math.round((llmResult.inputTokens * inputCostPerMillion) / 1_000_000);
+  const outputCostMicros = Math.round((llmResult.outputTokens * outputCostPerMillion) / 1_000_000);
   const totalLlmCostMicros = inputCostMicros + outputCostMicros;
 
   await prisma.usageEvent.create({

@@ -30,7 +30,9 @@ export interface ExecutionResult {
 
 export class ProposalNotApprovedError extends Error {
   constructor(proposalId: string, status: string) {
-    super(`Cannot execute proposal '${proposalId}': proposal must be approved by authenticated user first. Current status: ${status}`);
+    super(
+      `Cannot execute proposal '${proposalId}': proposal must be approved by authenticated user first. Current status: ${status}`,
+    );
     this.name = "ProposalNotApprovedError";
   }
 }
@@ -69,10 +71,7 @@ export class ProposalExecutor {
    * repeated approvals lose the claim and get ProposalAlreadyClaimedError, so a
    * meeting is never booked (or an email sent) twice.
    */
-  async approveAndExecute(
-    context: TenantContext,
-    proposalId: string,
-  ): Promise<ExecutionResult> {
+  async approveAndExecute(context: TenantContext, proposalId: string): Promise<ExecutionResult> {
     const existing = await this.proposalRepository.findById(context, proposalId);
     if (!existing) {
       throw new ProposalNotFoundError(proposalId);
@@ -157,7 +156,9 @@ export class ProposalExecutor {
       durationMinutes?: number;
     };
 
-    const start = payload.proposedDatetime ? new Date(payload.proposedDatetime) : new Date(Date.now() + 86400000);
+    const start = payload.proposedDatetime
+      ? new Date(payload.proposedDatetime)
+      : new Date(Date.now() + 86400000);
     const duration = payload.durationMinutes || 45;
     const end = new Date(start.getTime() + duration * 60000);
     const title = payload.title || "اجتماع متابعة (دوّن)";
@@ -262,7 +263,12 @@ export class ProposalExecutor {
 
     if (this.reminderRepository) {
       if (reminderId) {
-        await this.reminderRepository.updateStatus(context, reminderId, ReminderStatus.SENT, new Date());
+        await this.reminderRepository.updateStatus(
+          context,
+          reminderId,
+          ReminderStatus.SENT,
+          new Date(),
+        );
       } else {
         const reminder = await this.reminderRepository.create(context, {
           taskId: payload.taskId,

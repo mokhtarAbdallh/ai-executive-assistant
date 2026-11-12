@@ -1,12 +1,6 @@
-import type {
-  PrismaClient,
-  Proposal,
-  ProposalActionType,
-  Prisma} from "@prisma/client";
-import {
-  ProposalStatus
-} from "@prisma/client";
-import type { TenantContext} from "./base.js";
+import type { PrismaClient, Proposal, ProposalActionType, Prisma } from "@prisma/client";
+import { ProposalStatus } from "@prisma/client";
+import type { TenantContext } from "./base.js";
 import { CrossTenantAccessViolationError } from "./base.js";
 import {
   allowedSourceStatuses,
@@ -122,11 +116,7 @@ export class ProposalRepository {
     return this.transitionAtomically(context, proposalId, ProposalStatus.APPROVED);
   }
 
-  async reject(
-    context: TenantContext,
-    proposalId: string,
-    reason?: string,
-  ): Promise<Proposal> {
+  async reject(context: TenantContext, proposalId: string, reason?: string): Promise<Proposal> {
     return this.transitionAtomically(
       context,
       proposalId,

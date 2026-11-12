@@ -125,42 +125,48 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
 
     const mockPrisma = {
       user: {
-        findUnique: vi.fn().mockImplementation(({ where }: { where: { id?: string; email?: string } }) => {
-          if (where.email !== undefined) {
-            const byEmail: Record<string, string> = {
-              "alice@example.com": aliceId,
-              "bob@example.com": bobId,
-            };
-            const id = byEmail[where.email];
-            return Promise.resolve(id ? { id, email: where.email } : null);
-          }
-          if (where.id === adminId) {
-            return Promise.resolve({ id: adminId, email: "ops@dawwen.ai", isPlatformAdmin: true });
-          }
-          if (where.id === aliceId) {
-            return Promise.resolve({
-              id: aliceId,
-              email: "alice@example.com",
-              name: "Alice Founder",
-              role: Role.OWNER,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-              meetings: [aliceMeeting],
-            });
-          }
-          if (where.id === bobId) {
-            return Promise.resolve({
-              id: bobId,
-              email: "bob@example.com",
-              name: "Bob Client",
-              role: Role.OWNER,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-              meetings: [bobMeeting],
-            });
-          }
-          return Promise.resolve(null);
-        }),
+        findUnique: vi
+          .fn()
+          .mockImplementation(({ where }: { where: { id?: string; email?: string } }) => {
+            if (where.email !== undefined) {
+              const byEmail: Record<string, string> = {
+                "alice@example.com": aliceId,
+                "bob@example.com": bobId,
+              };
+              const id = byEmail[where.email];
+              return Promise.resolve(id ? { id, email: where.email } : null);
+            }
+            if (where.id === adminId) {
+              return Promise.resolve({
+                id: adminId,
+                email: "ops@dawwen.ai",
+                isPlatformAdmin: true,
+              });
+            }
+            if (where.id === aliceId) {
+              return Promise.resolve({
+                id: aliceId,
+                email: "alice@example.com",
+                name: "Alice Founder",
+                role: Role.OWNER,
+                createdAt: new Date(),
+                updatedAt: new Date(),
+                meetings: [aliceMeeting],
+              });
+            }
+            if (where.id === bobId) {
+              return Promise.resolve({
+                id: bobId,
+                email: "bob@example.com",
+                name: "Bob Client",
+                role: Role.OWNER,
+                createdAt: new Date(),
+                updatedAt: new Date(),
+                meetings: [bobMeeting],
+              });
+            }
+            return Promise.resolve(null);
+          }),
         delete: vi.fn().mockImplementation(({ where }: { where: { id: string } }) => {
           return Promise.resolve({ id: where.id });
         }),
@@ -199,13 +205,15 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
           meetingsStore.set(item.id, item);
           return Promise.resolve(item);
         }),
-        update: vi.fn().mockImplementation(({ where, data }: { where: { id: string }; data: any }) => {
-          const existing = meetingsStore.get(where.id);
-          if (!existing) throw new Error("Not found");
-          const updated = { ...existing, ...data };
-          meetingsStore.set(where.id, updated);
-          return Promise.resolve(updated);
-        }),
+        update: vi
+          .fn()
+          .mockImplementation(({ where, data }: { where: { id: string }; data: any }) => {
+            const existing = meetingsStore.get(where.id);
+            if (!existing) throw new Error("Not found");
+            const updated = { ...existing, ...data };
+            meetingsStore.set(where.id, updated);
+            return Promise.resolve(updated);
+          }),
         delete: vi.fn().mockImplementation(({ where }: { where: { id: string } }) => {
           const existing = meetingsStore.get(where.id);
           meetingsStore.delete(where.id);
@@ -290,9 +298,7 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
           return Promise.resolve(item);
         }),
         findMany: vi.fn().mockImplementation(({ where }: { where: { userId: string } }) => {
-          return Promise.resolve(
-            transactionsStore.filter((t) => t.userId === where.userId),
-          );
+          return Promise.resolve(transactionsStore.filter((t) => t.userId === where.userId));
         }),
       },
       usageEvent: {
@@ -302,9 +308,7 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
           return Promise.resolve(item);
         }),
         findMany: vi.fn().mockImplementation(({ where }: { where: { userId: string } }) => {
-          return Promise.resolve(
-            usageEventsStore.filter((ev) => ev.userId === where.userId),
-          );
+          return Promise.resolve(usageEventsStore.filter((ev) => ev.userId === where.userId));
         }),
       },
       meetingEmbedding: {

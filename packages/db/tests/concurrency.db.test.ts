@@ -7,7 +7,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PrismaClient, ProposalActionType, ProposalStatus } from "@prisma/client";
 import { ProposalRepository } from "../src/repositories/proposal.repository.js";
-import { CreditRepository, InsufficientBalanceError } from "../src/repositories/credit.repository.js";
+import {
+  CreditRepository,
+  InsufficientBalanceError,
+} from "../src/repositories/credit.repository.js";
 import { ProposalAlreadyClaimedError } from "../src/proposals/state-machine.js";
 
 const url = process.env.TEST_DATABASE_URL;

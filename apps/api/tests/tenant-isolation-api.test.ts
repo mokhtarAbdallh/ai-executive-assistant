@@ -54,10 +54,20 @@ describe("API Tenant Isolation: A user can never read or modify another user's d
     user: {
       findUnique: vi.fn().mockImplementation(({ where }: { where: { id: string } }) => {
         if (where.id === aliceId) {
-          return Promise.resolve({ id: aliceId, email: "alice@example.com", name: "Alice", role: Role.OWNER });
+          return Promise.resolve({
+            id: aliceId,
+            email: "alice@example.com",
+            name: "Alice",
+            role: Role.OWNER,
+          });
         }
         if (where.id === bobId) {
-          return Promise.resolve({ id: bobId, email: "bob@example.com", name: "Bob", role: Role.OWNER });
+          return Promise.resolve({
+            id: bobId,
+            email: "bob@example.com",
+            name: "Bob",
+            role: Role.OWNER,
+          });
         }
         return Promise.resolve(null);
       }),
@@ -72,28 +82,48 @@ describe("API Tenant Isolation: A user can never read or modify another user's d
           Array.from(proposalsStore.values()).filter((p) => p.userId === where.userId),
         );
       }),
-      update: vi.fn().mockImplementation(({ where, data }: { where: { id: string }; data: Partial<Proposal> }) => {
-        const existing = proposalsStore.get(where.id);
-        if (existing) {
-          Object.assign(existing, data);
-          return Promise.resolve(existing);
-        }
-        return Promise.resolve(null);
-      }),
+      update: vi
+        .fn()
+        .mockImplementation(
+          ({ where, data }: { where: { id: string }; data: Partial<Proposal> }) => {
+            const existing = proposalsStore.get(where.id);
+            if (existing) {
+              Object.assign(existing, data);
+              return Promise.resolve(existing);
+            }
+            return Promise.resolve(null);
+          },
+        ),
     },
     userSettings: {
-      upsert: vi.fn().mockImplementation(({ where, create, update }: { where: { userId: string }; create?: { language?: string; timezone?: string; audioRetentionDays?: number }; update?: { language?: string; timezone?: string; audioRetentionDays?: number } }) => {
-        return Promise.resolve({
-          userId: where.userId,
-          language: update?.language || create?.language || "ar",
-          timezone: update?.timezone || create?.timezone || "Africa/Cairo",
-          audioRetentionDays: update?.audioRetentionDays || create?.audioRetentionDays || 7,
-        });
-      }),
+      upsert: vi
+        .fn()
+        .mockImplementation(
+          ({
+            where,
+            create,
+            update,
+          }: {
+            where: { userId: string };
+            create?: { language?: string; timezone?: string; audioRetentionDays?: number };
+            update?: { language?: string; timezone?: string; audioRetentionDays?: number };
+          }) => {
+            return Promise.resolve({
+              userId: where.userId,
+              language: update?.language || create?.language || "ar",
+              timezone: update?.timezone || create?.timezone || "Africa/Cairo",
+              audioRetentionDays: update?.audioRetentionDays || create?.audioRetentionDays || 7,
+            });
+          },
+        ),
     },
     recordingConsent: {
       findMany: vi.fn().mockImplementation(({ where }: { where: { userId: string } }) => {
-        return Promise.resolve(where.userId === aliceId ? [{ id: "c-alice", userId: aliceId, participantName: "Alice Guest" }] : []);
+        return Promise.resolve(
+          where.userId === aliceId
+            ? [{ id: "c-alice", userId: aliceId, participantName: "Alice Guest" }]
+            : [],
+        );
       }),
     },
   } as unknown as PrismaClient;

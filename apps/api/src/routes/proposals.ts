@@ -93,7 +93,10 @@ export async function proposalRoutes(
     const params = IdParamsSchema.safeParse(request.params);
     if (!params.success) return reply.status(400).send({ error: "Validation failed" });
     try {
-      const proposal = await proposalRepository.findById({ userId: request.user!.id }, params.data.id);
+      const proposal = await proposalRepository.findById(
+        { userId: request.user!.id },
+        params.data.id,
+      );
       if (!proposal) throw new ProposalNotFoundError(params.data.id);
       return reply.send({ proposal });
     } catch (err) {
