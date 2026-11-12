@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LlmClient, TranscriptContext, LlmAnalysisResult } from "../types.js";
+import { LlmAnalysisFailedError } from "../types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -106,7 +107,17 @@ Extract the complete meeting analysis strictly matching the requested JSON schem
         },
       });
 
-      const response = await this.client.send(command);
+      let response;
+      try {
+        response = await this.client.send(command);
+      } catch (err: unknown) {
+        throw new LlmAnalysisFailedError(
+          `Bedrock request failed on attempt ${attempt}: ${err instanceof Error ? err.message : String(err)}`,
+          totalInputTokens,
+          totalOutputTokens,
+          this.modelId,
+        );
+      }
 
       const usage = response.usage;
       totalInputTokens += usage?.inputTokens || 0;
@@ -144,8 +155,11 @@ Extract the complete meeting analysis strictly matching the requested JSON schem
       }
     }
 
-    throw new Error(
+    throw new LlmAnalysisFailedError(
       `Bedrock meeting analysis failed after ${this.maxRetries} attempts. Last error: ${lastError}`,
+      totalInputTokens,
+      totalOutputTokens,
+      this.modelId,
     );
   }
 }

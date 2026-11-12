@@ -3,6 +3,7 @@ import {
   FakeLlmClient,
   BedrockLlmClient,
   createLlmClient,
+  LlmAnalysisFailedError,
   type TranscriptContext,
 } from "../src/index.js";
 import { MeetingAnalysisSchema } from "@dawwen/shared";
@@ -159,6 +160,38 @@ describe("LLM Package (@dawwen/llm)", () => {
       expect(result.inputTokens).toBe(1100);
       expect(result.outputTokens).toBe(300);
       expect(result.analysis.purpose).toBe("المراجعة الأسبوعية");
+    });
+
+    it("reports the tokens already spent when every attempt fails (Invariant 7)", async () => {
+      const client = new BedrockLlmClient({ maxRetries: 2 });
+      (client as any).client = {
+        send: vi.fn().mockResolvedValue({
+          output: { message: { content: [{ text: "not json" }] } },
+          usage: { inputTokens: 400, outputTokens: 20 },
+        }),
+      };
+
+      const err = await client.analyzeMeeting(sampleContext).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(LlmAnalysisFailedError);
+      expect((err as LlmAnalysisFailedError).inputTokens).toBe(800);
+      expect((err as LlmAnalysisFailedError).outputTokens).toBe(40);
+    });
+
+    it("keeps the token count when a later request throws (e.g. throttling)", async () => {
+      const client = new BedrockLlmClient({ maxRetries: 3 });
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce({
+          output: { message: { content: [{ text: "not json" }] } },
+          usage: { inputTokens: 300, outputTokens: 10 },
+        })
+        .mockRejectedValueOnce(new Error("ThrottlingException"));
+      (client as any).client = { send };
+
+      const err = await client.analyzeMeeting(sampleContext).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(LlmAnalysisFailedError);
+      expect((err as LlmAnalysisFailedError).inputTokens).toBe(300);
+      expect((err as LlmAnalysisFailedError).message).toContain("ThrottlingException");
     });
   });
 
