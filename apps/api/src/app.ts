@@ -68,6 +68,14 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     bodyLimit: 1024 * 1024, // audio never goes through the API (direct S3 upload)
   });
 
+  // Money/credit columns are BigInt; JSON has no BigInt, so send them as strings
+  // instead of crashing the response (e.g. meetings.creditHoldMicros).
+  app.setReplySerializer((payload) =>
+    JSON.stringify(payload, (_key, value: unknown) =>
+      typeof value === "bigint" ? value.toString() : value,
+    ),
+  );
+
   const prisma = opts.prisma ?? getPrismaClient();
   const appSecret =
     opts.appSecret ?? process.env.APP_SECRET ?? "dawwen-default-dev-secret-32-chars-long";
@@ -131,6 +139,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     draftRepository,
     reminderRepository,
     taskRepository,
+    undefined,
+    {
+      // Simulated calendar/email only outside production (ADR-023).
+      allowSimulated: process.env.NODE_ENV !== "production" || process.env.DEMO_MODE === "true",
+    },
   );
 
   const searchService = new SearchService(prisma, opts.embeddingClient);

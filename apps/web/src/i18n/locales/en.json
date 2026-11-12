@@ -348,7 +348,14 @@
     "rejectedToast": "Proposal rejected",
     "reject": "Reject",
     "rejectTitle": "Reject this proposal?",
-    "rejectHint": "Add a short reason (optional) — nothing will be executed."
+    "rejectHint": "Add a short reason (optional) — nothing will be executed.",
+    "errors": {
+      "proposal_incomplete": "This proposal is missing details (like a time or an email), so we won't guess. Reject it or ask for a clearer one.",
+      "calendar_not_connected": "Connect Google Calendar from the Calendar page first, then approve the booking.",
+      "email_not_configured": "Email sending isn't enabled on the server yet.",
+      "conflict": "This proposal was already handled.",
+      "execution_failed": "Execution failed and nothing happened. Try again in a bit."
+    }
   },
   "ask": {
     "title": "Ask Dawwen",

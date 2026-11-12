@@ -24,6 +24,8 @@ export interface CreateCalendarEventInput {
 }
 
 export interface CalendarProvider {
+  /** True for providers that do not touch a real calendar (dev/demo only). */
+  readonly simulated?: boolean;
   getAuthUrl(state: string, redirectUri: string): string;
   exchangeCode(code: string, redirectUri: string): Promise<GoogleOAuthTokens>;
   listEvents(tokens: GoogleOAuthTokens, options: { timeMin: Date; timeMax: Date }): Promise<CalendarEventItem[]>;
@@ -182,6 +184,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
 }
 
 export class FakeCalendarProvider implements CalendarProvider {
+  readonly simulated = true;
   private fakeEvents: CalendarEventItem[] = [];
 
   constructor() {

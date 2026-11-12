@@ -47,8 +47,50 @@ export class ProposalExecutionFailedError extends Error {
   }
 }
 
+/** The proposal lacks data needed to act on it; nothing was approved or executed. */
+export class ProposalIncompleteError extends Error {
+  constructor(
+    public readonly proposalId: string,
+    public readonly missing: string[],
+  ) {
+    super(`Proposal '${proposalId}' is missing: ${missing.join(", ")}`);
+    this.name = "ProposalIncompleteError";
+  }
+}
+
+/** The channel needed to act (calendar, email) is not connected/configured. */
+export class ProposalChannelUnavailableError extends Error {
+  constructor(
+    public readonly proposalId: string,
+    public readonly channel: "calendar" | "email",
+  ) {
+    super(
+      channel === "calendar"
+        ? "Connect Google Calendar before approving a meeting booking."
+        : "Email sending is not configured on this server.",
+    );
+    this.name = "ProposalChannelUnavailableError";
+  }
+}
+
+export interface ProposalExecutorOptions {
+  /**
+   * Allow simulated channels (FakeCalendarProvider without a connection, console
+   * email). Only for local dev/demo: production must never report a simulated
+   * side effect as executed (ADR-023).
+   */
+  allowSimulated?: boolean;
+}
+
+function isValidDate(value: unknown): value is string {
+  return typeof value === "string" && !Number.isNaN(new Date(value).getTime());
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 export class ProposalExecutor {
   private readonly notificationProvider: NotificationProvider;
+  private readonly allowSimulated: boolean;
 
   constructor(
     private readonly proposalRepository: ProposalRepository,
@@ -59,8 +101,58 @@ export class ProposalExecutor {
     private readonly reminderRepository?: ReminderRepository,
     private readonly taskRepository?: TaskRepository,
     notificationProvider?: NotificationProvider,
+    options: ProposalExecutorOptions = {},
   ) {
     this.notificationProvider = notificationProvider ?? new ConsoleNotificationProvider();
+    this.allowSimulated = options.allowSimulated ?? false;
+  }
+
+  /**
+   * Refuses (before approving anything) a proposal that would need invented data:
+   * no default dates, no placeholder recipients (Invariant 3 applied to actions).
+   */
+  private async assertExecutable(context: TenantContext, proposal: Proposal): Promise<void> {
+    const payload = (proposal.payload ?? {}) as Record<string, unknown>;
+    const missing: string[] = [];
+    switch (proposal.actionType) {
+      case ProposalActionType.SCHEDULE_MEETING: {
+        if (!isValidDate(payload.proposedDatetime)) {
+          missing.push("proposedDatetime");
+          break;
+        }
+        const connection = await this.calendarConnectionRepository.getConnection(context, "google");
+        if (
+          !connection?.encryptedTokens &&
+          !(this.allowSimulated && this.calendarProvider.simulated)
+        ) {
+          throw new ProposalChannelUnavailableError(proposal.id, "calendar");
+        }
+        break;
+      }
+      case ProposalActionType.DRAFT_EMAIL:
+        if (typeof payload.recipientEmail !== "string" || !EMAIL_RE.test(payload.recipientEmail)) {
+          missing.push("recipientEmail");
+        }
+        if (typeof payload.body !== "string" || !payload.body.trim()) missing.push("body");
+        if (missing.length === 0 && this.notificationProvider.simulated && !this.allowSimulated) {
+          throw new ProposalChannelUnavailableError(proposal.id, "email");
+        }
+        break;
+      case ProposalActionType.SEND_REMINDER:
+        if (!isValidDate(payload.remindAt) && typeof payload.reminderId !== "string") {
+          missing.push("remindAt");
+        }
+        if (!this.reminderRepository) missing.push("reminderRepository");
+        break;
+      case ProposalActionType.CREATE_TASK:
+        if (!proposal.meetingId && typeof payload.meetingId !== "string") missing.push("meetingId");
+        if (!payload.title && !payload.task) missing.push("title");
+        if (!this.taskRepository) missing.push("taskRepository");
+        break;
+      default:
+        break;
+    }
+    if (missing.length > 0) throw new ProposalIncompleteError(proposal.id, missing);
   }
 
   /**
@@ -83,6 +175,8 @@ export class ProposalExecutor {
     ) {
       throw new ProposalNotApprovedError(proposalId, existing.status);
     }
+
+    await this.assertExecutable(context, existing);
 
     if (existing.status === ProposalStatus.PENDING_APPROVAL) {
       try {
@@ -156,23 +250,21 @@ export class ProposalExecutor {
       durationMinutes?: number;
     };
 
-    const start = payload.proposedDatetime
-      ? new Date(payload.proposedDatetime)
-      : new Date(Date.now() + 86400000);
+    // Validated by assertExecutable: never invent a date.
+    const start = new Date(payload.proposedDatetime!);
     const duration = payload.durationMinutes || 45;
     const end = new Date(start.getTime() + duration * 60000);
     const title = payload.title || "اجتماع متابعة (دوّن)";
 
-    // Look for calendar connection
     const connection = await this.calendarConnectionRepository.getConnection(context, "google");
-
-    let tokens: GoogleOAuthTokens = { accessToken: "demo-token" };
+    let tokens: GoogleOAuthTokens;
     if (connection?.encryptedTokens) {
-      try {
-        tokens = await this.tokenEncryptor.decrypt<GoogleOAuthTokens>(connection.encryptedTokens);
-      } catch {
-        tokens = { accessToken: "demo-token" };
-      }
+      // A broken connection is a failure, not a silent fallback to a fake token.
+      tokens = await this.tokenEncryptor.decrypt<GoogleOAuthTokens>(connection.encryptedTokens);
+    } else if (this.allowSimulated && this.calendarProvider.simulated) {
+      tokens = { accessToken: "simulated" };
+    } else {
+      throw new ProposalChannelUnavailableError(proposal.id, "calendar");
     }
 
     const created = await this.calendarProvider.createEvent(tokens, {
@@ -232,7 +324,7 @@ export class ProposalExecutor {
 
     // Send via notification provider
     const sendResult = await this.notificationProvider.sendEmail({
-      to: payload.recipientEmail || "client@example.com",
+      to: payload.recipientEmail!,
       subject: payload.subject || "متابعة الاجتماع",
       body: payload.body,
     });
@@ -258,41 +350,28 @@ export class ProposalExecutor {
       reminderId?: string;
     };
 
-    const remindAt = payload.remindAt ? new Date(payload.remindAt) : new Date(Date.now() + 3600000);
-    let reminderId = payload.reminderId;
-
-    if (this.reminderRepository) {
-      if (reminderId) {
-        await this.reminderRepository.updateStatus(
-          context,
-          reminderId,
-          ReminderStatus.SENT,
-          new Date(),
-        );
-      } else {
-        const reminder = await this.reminderRepository.create(context, {
-          taskId: payload.taskId,
-          meetingId: proposal.meetingId || payload.meetingId,
-          remindAt,
-          channel: payload.channel ?? "console",
-          status: ReminderStatus.SCHEDULED,
-        });
-        reminderId = reminder.id;
-      }
+    // Approving a reminder schedules it; the worker's dispatcher sends it when due
+    // (ADR-020/023). Nothing is sent, or marked SENT, at approval time.
+    const reminders = this.reminderRepository!;
+    if (payload.reminderId) {
+      const existing = await reminders.findById(context, payload.reminderId);
+      if (!existing) throw new Error(`Reminder '${payload.reminderId}' not found.`);
+      return {
+        reminderId: existing.id,
+        remindAt: existing.remindAt.toISOString(),
+        scheduled: true,
+      };
     }
 
-    const notifResult = await this.notificationProvider.sendReminder({
-      recipientId: context.userId,
-      channel: payload.channel ?? "console",
+    const remindAt = new Date(payload.remindAt!);
+    const reminder = await reminders.create(context, {
+      taskId: payload.taskId,
+      meetingId: proposal.meetingId || payload.meetingId,
       remindAt,
-      note: payload.note || "تذكير بمهمة من اجتماع دوّن",
+      channel: payload.channel ?? "email",
+      status: ReminderStatus.SCHEDULED,
     });
-
-    return {
-      reminderId,
-      messageId: notifResult.messageId,
-      remindAt: remindAt.toISOString(),
-    };
+    return { reminderId: reminder.id, remindAt: remindAt.toISOString(), scheduled: true };
   }
 
   private async executeCreateTask(
@@ -320,11 +399,8 @@ export class ProposalExecutor {
         ? new Date(payload.due)
         : null;
 
-    if (!this.taskRepository || !meetingId) {
-      return { created: true, title };
-    }
-
-    const task = await this.taskRepository.create(context, meetingId, {
+    // Validated by assertExecutable: a task is only reported when it really exists.
+    const task = await this.taskRepository!.create(context, meetingId!, {
       title,
       ownerName,
       dueDate,

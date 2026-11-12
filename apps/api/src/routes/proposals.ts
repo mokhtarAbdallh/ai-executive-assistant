@@ -13,6 +13,8 @@ import {
   type ProposalExecutor,
   ProposalNotApprovedError,
   ProposalExecutionFailedError,
+  ProposalIncompleteError,
+  ProposalChannelUnavailableError,
 } from "../services/proposal-executor.js";
 
 interface ProposalRoutesOptions {
@@ -50,6 +52,17 @@ function sendProposalError(reply: FastifyReply, err: unknown): FastifyReply {
     err instanceof UnauthorizedProposalExecutionError
   ) {
     return reply.status(409).send({ error: "conflict", message: err.message });
+  }
+  if (err instanceof ProposalIncompleteError) {
+    return reply
+      .status(422)
+      .send({ error: "proposal_incomplete", message: err.message, missing: err.missing });
+  }
+  if (err instanceof ProposalChannelUnavailableError) {
+    return reply.status(422).send({
+      error: err.channel === "calendar" ? "calendar_not_connected" : "email_not_configured",
+      message: err.message,
+    });
   }
   if (err instanceof ProposalExecutionFailedError) {
     return reply.status(502).send({ error: "execution_failed", message: err.reason });

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { CalendarDays, Check, Inbox, MapPin, RefreshCw, ShieldCheck, Users, X } from "lucide-react";
 import type { Proposal } from "../types";
 import { approveProposal, fetchProposals, rejectProposal } from "../api";
+import { proposalErrorKey } from "../lib/proposal-errors";
 import { formatDateTime, formatRelativeTime } from "../lib/format";
 import { ProposalActionBadge, ProposalStatusBadge } from "./StatusBadges";
 import {
@@ -91,8 +92,8 @@ export function ProposalsInbox({
           proposal.actionType === "SCHEDULE_MEETING" ? t("proposals.approvedCalendar") : undefined,
         tone: "success",
       });
-    } catch {
-      toast({ title: t("errors.generic"), tone: "error" });
+    } catch (err) {
+      toast({ title: t(proposalErrorKey(err)), tone: "error" });
     } finally {
       setBusyId(null);
     }

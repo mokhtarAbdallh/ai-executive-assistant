@@ -155,3 +155,15 @@ describe("apiFetch", () => {
     expect(listener).not.toHaveBeenCalled();
   });
 });
+
+describe("proposalErrorKey", () => {
+  it("maps known API refusal codes to their i18n keys and falls back to generic", async () => {
+    const { ApiError } = await import("./http");
+    const { proposalErrorKey } = await import("./proposal-errors");
+    expect(proposalErrorKey(new ApiError(422, "x", "calendar_not_connected"))).toBe(
+      "proposals.errors.calendar_not_connected",
+    );
+    expect(proposalErrorKey(new ApiError(500, "x", "boom"))).toBe("errors.generic");
+    expect(proposalErrorKey(new Error("x"))).toBe("errors.generic");
+  });
+});
