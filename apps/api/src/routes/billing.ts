@@ -1,28 +1,39 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { CreditRepository } from "@dawwen/db";
+import type { CreditRepository, PrismaClient } from "@dawwen/db";
 import type { PaymentProvider } from "../services/payment.js";
 
-const TopupBodySchema = z.object({
-  amountMicros: z.union([z.number(), z.string()]).optional(),
-  amountDollars: z.number().positive().optional(),
-  reference: z.string().max(255).optional(),
-  description: z.string().max(255).optional(),
-}).refine(
-  (data) => data.amountMicros !== undefined || data.amountDollars !== undefined,
-  { message: "Either amountMicros or amountDollars must be provided." },
-);
+/** Max single top-up: $100,000 — guards against fat-finger admin input. */
+const MAX_TOPUP_MICROS = 100_000n * 1_000_000n;
+
+const TopupBodySchema = z
+  .object({
+    /** The user whose ledger is credited (admins only, ADR-022). */
+    userEmail: z.string().trim().toLowerCase().email(),
+    /** Integer micros as a decimal string (no floats, no sign). */
+    amountMicros: z
+      .string()
+      .regex(/^[0-9]{1,15}$/, "amountMicros must be a positive integer string")
+      .optional(),
+    amountDollars: z.number().positive().max(100_000).optional(),
+    reference: z.string().max(255).optional(),
+    description: z.string().max(255).optional(),
+  })
+  .refine((data) => (data.amountMicros === undefined) !== (data.amountDollars === undefined), {
+    message: "Provide exactly one of amountMicros or amountDollars.",
+  });
 
 export interface BillingRoutesOptions {
   creditRepository: CreditRepository;
   paymentProvider: PaymentProvider;
+  prisma: PrismaClient;
 }
 
 export async function billingRoutes(
   fastify: FastifyInstance,
   options: BillingRoutesOptions,
 ) {
-  const { creditRepository, paymentProvider } = options;
+  const { creditRepository, paymentProvider, prisma } = options;
 
   // 1. GET /api/billing/balance
   fastify.get(
@@ -100,11 +111,25 @@ export async function billingRoutes(
     },
   );
 
-  // 4. POST /api/billing/topup
+  // 4. POST /api/billing/topup — platform admins only (ADR-022).
+  // Regular users cannot credit any ledger, including their own; payments are
+  // confirmed out-of-band (InstaPay / transfer) and then credited by an admin.
   fastify.post(
     "/billing/topup",
     { preHandler: [fastify.authenticate] },
     async (request, reply) => {
+      // Re-read the flag on every call so a revoked admin's old token stops working.
+      const caller = await prisma.user.findUnique({
+        where: { id: request.user!.id },
+        select: { isPlatformAdmin: true },
+      });
+      if (!caller?.isPlatformAdmin) {
+        return reply.status(403).send({
+          error: "forbidden",
+          message: "Only a platform admin can add credit.",
+        });
+      }
+
       const parsed = TopupBodySchema.safeParse(request.body);
       if (!parsed.success) {
         return reply.status(400).send({
@@ -113,28 +138,39 @@ export async function billingRoutes(
         });
       }
 
-      const user = request.user!;
-      let amountMicros: bigint;
+      const amountMicros =
+        parsed.data.amountDollars !== undefined
+          ? BigInt(Math.round(parsed.data.amountDollars * 1_000_000))
+          : BigInt(parsed.data.amountMicros!);
 
-      if (parsed.data.amountDollars !== undefined) {
-        amountMicros = BigInt(Math.round(parsed.data.amountDollars * 1_000_000));
-      } else {
-        amountMicros = BigInt(parsed.data.amountMicros!);
-      }
-
-      if (amountMicros <= 0n) {
+      if (amountMicros <= 0n || amountMicros > MAX_TOPUP_MICROS) {
         return reply.status(400).send({
           error: "Invalid amount",
-          message: "Top-up amount must be positive.",
+          message: "Top-up amount must be positive and at most $100,000.",
         });
       }
 
+      const target = await prisma.user.findUnique({
+        where: { email: parsed.data.userEmail },
+        select: { id: true },
+      });
+      if (!target) {
+        return reply.status(404).send({ error: "not_found", message: "User not found" });
+      }
+
       const result = await paymentProvider.topup({
-        userId: user.id,
+        userId: target.id,
         amountMicros,
         reference: parsed.data.reference,
-        description: parsed.data.description,
+        description:
+          parsed.data.description ??
+          `Manual top-up by admin ${request.user!.id}${parsed.data.reference ? ` (ref: ${parsed.data.reference})` : ""}`,
       });
+
+      request.log.info(
+        { adminId: request.user!.id, targetUserId: target.id, amountMicros: amountMicros.toString() },
+        "admin credit top-up",
+      );
 
       return reply.send({
         success: true,

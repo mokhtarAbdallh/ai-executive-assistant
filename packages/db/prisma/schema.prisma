@@ -73,6 +73,8 @@ model User {
   passwordHash        String?
   name                String
   role                Role                 @default(OWNER)
+  /// Platform operator (not a team role): may credit other users' ledgers (ADR-022).
+  isPlatformAdmin     Boolean              @default(false)
   avatarUrl           String?
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt

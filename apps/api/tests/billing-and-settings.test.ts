@@ -26,6 +26,8 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
 
   const aliceId = "usr-alice-phase6";
   const bobId = "usr-bob-phase6";
+  const adminId = "usr-admin-phase6";
+  let adminToken: string;
   const aliceMeetingId = "mtg-alice-phase6-001";
   const bobMeetingId = "mtg-bob-phase6-001";
   const secret = "test-jwt-secret-at-least-32-chars-long!";
@@ -123,7 +125,18 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
 
     const mockPrisma = {
       user: {
-        findUnique: vi.fn().mockImplementation(({ where }: { where: { id: string } }) => {
+        findUnique: vi.fn().mockImplementation(({ where }: { where: { id?: string; email?: string } }) => {
+          if (where.email !== undefined) {
+            const byEmail: Record<string, string> = {
+              "alice@example.com": aliceId,
+              "bob@example.com": bobId,
+            };
+            const id = byEmail[where.email];
+            return Promise.resolve(id ? { id, email: where.email } : null);
+          }
+          if (where.id === adminId) {
+            return Promise.resolve({ id: adminId, email: "ops@dawwen.ai", isPlatformAdmin: true });
+          }
           if (where.id === aliceId) {
             return Promise.resolve({
               id: aliceId,
@@ -362,6 +375,10 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
     });
     bobToken = bobTokens.accessToken;
 
+    adminToken = (
+      await auth.issueTokens({ id: adminId, email: "ops@dawwen.ai", name: "Ops", role: Role.OWNER })
+    ).accessToken;
+
     const creditRepo = new CreditRepository(mockPrisma);
     const meetingRepo = new MeetingRepository(mockPrisma);
     const paymentProvider = new ManualPaymentAdapter(creditRepo);
@@ -479,12 +496,25 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
   // 2. PaymentProvider & Credit Top-up
   // ==========================================
   describe("PaymentProvider (Manual Adapter) & Credit Top-up", () => {
-    it("tops up credit balance via POST /api/billing/topup", async () => {
+    it("forbids a regular user from crediting their own balance (403)", async () => {
       const res = await app.inject({
         method: "POST",
         url: "/api/billing/topup",
         headers: { authorization: `Bearer ${aliceToken}` },
+        payload: { userEmail: "alice@example.com", amountDollars: 1_000_000 },
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(ledgersStore.get(aliceId)?.balanceMicros ?? 0n).toBe(0n);
+    });
+
+    it("lets a platform admin credit a user by email via POST /api/billing/topup", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/billing/topup",
+        headers: { authorization: `Bearer ${adminToken}` },
         payload: {
+          userEmail: "Alice@Example.com",
           amountDollars: 10.0, // $10 = 10,000,000 micros
           reference: "VOUCHER-DEPI-2026",
           description: "Manual voucher credit deposit",
@@ -498,6 +528,30 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
       expect(body.transaction.newBalanceMicros).toBe("10000000");
       expect(body.transaction.formattedNewBalance).toBe("$10.00");
       expect(body.transaction.reference).toBe("VOUCHER-DEPI-2026");
+      expect(ledgersStore.get(aliceId)?.balanceMicros).toBe(10_000_000n);
+    });
+
+    it("returns 404 when the admin targets an unknown email", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/billing/topup",
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: { userEmail: "nobody@example.com", amountDollars: 5 },
+      });
+
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects malformed micro amounts with 400 instead of crashing", async () => {
+      for (const amountMicros of ["abc", "1.5", "-10"]) {
+        const res = await app.inject({
+          method: "POST",
+          url: "/api/billing/topup",
+          headers: { authorization: `Bearer ${adminToken}` },
+          payload: { userEmail: "alice@example.com", amountMicros },
+        });
+        expect(res.statusCode).toBe(400);
+      }
     });
 
     it("allows upload after topping up credits", async () => {
@@ -523,8 +577,9 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
       const res = await app.inject({
         method: "POST",
         url: "/api/billing/topup",
-        headers: { authorization: `Bearer ${aliceToken}` },
+        headers: { authorization: `Bearer ${adminToken}` },
         payload: {
+          userEmail: "alice@example.com",
           amountDollars: -5.0,
         },
       });

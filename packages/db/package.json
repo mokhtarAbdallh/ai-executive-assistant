@@ -13,7 +13,8 @@
   "scripts": {
     "generate": "prisma generate",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "admin:grant": "node --experimental-strip-types --no-warnings scripts/grant-admin.ts"
   },
   "dependencies": {
     "@dawwen/config": "workspace:*",

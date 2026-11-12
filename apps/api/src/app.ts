@@ -202,6 +202,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       await api.register(billingRoutes, {
         creditRepository,
         paymentProvider,
+        prisma,
       });
     },
     { prefix: API_PREFIX },
