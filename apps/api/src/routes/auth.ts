@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import type { PrismaClient } from "@dawwen/db";
 import type { LocalAuthProvider } from "../auth/local.provider.js";
 
 const RegisterSchema = z.object({
@@ -19,9 +20,9 @@ const RefreshSchema = z.object({
 
 export async function authRoutes(
   fastify: FastifyInstance,
-  options: { localAuthProvider: LocalAuthProvider },
+  options: { localAuthProvider: LocalAuthProvider; prisma: PrismaClient },
 ) {
-  const { localAuthProvider } = options;
+  const { localAuthProvider, prisma } = options;
 
   fastify.post("/auth/register", async (request, reply) => {
     const parsed = RegisterSchema.safeParse(request.body);
@@ -91,8 +92,7 @@ export async function authRoutes(
 
   fastify.post("/auth/refresh", async (request, reply) => {
     const parsed = RefreshSchema.safeParse(request.body);
-    const refreshToken =
-      parsed.data?.refreshToken || request.cookies.dawwen_refresh_token;
+    const refreshToken = parsed.data?.refreshToken || request.cookies.dawwen_refresh_token;
 
     if (!refreshToken) {
       return reply.status(401).send({
@@ -124,13 +124,17 @@ export async function authRoutes(
     }
   });
 
-  fastify.get(
-    "/auth/me",
-    { preHandler: [fastify.authenticate] },
-    async (request, reply) => {
-      return reply.send({ user: request.user });
-    },
-  );
+  fastify.get("/auth/me", { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    // The admin flag is read from the DB (never trusted from the token) so the UI
+    // can show admin-only tools; the API re-checks it on every admin call anyway.
+    const record = await prisma.user.findUnique({
+      where: { id: request.user!.id },
+      select: { isPlatformAdmin: true },
+    });
+    return reply.send({
+      user: { ...request.user, isPlatformAdmin: record?.isPlatformAdmin ?? false },
+    });
+  });
 
   fastify.post("/auth/logout", async (_request, reply) => {
     reply.clearCookie("dawwen_refresh_token", { path: "/api/auth" });

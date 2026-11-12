@@ -1,11 +1,5 @@
 export type MeetingStatus =
-  | "UPLOADED"
-  | "QUEUED"
-  | "TRANSCRIBING"
-  | "ANALYZING"
-  | "REVIEW_PENDING"
-  | "APPROVED"
-  | "FAILED";
+  "UPLOADED" | "QUEUED" | "TRANSCRIBING" | "ANALYZING" | "REVIEW_PENDING" | "APPROVED" | "FAILED";
 
 export type Priority = "LOW" | "MEDIUM" | "HIGH" | "URGENT";
 
@@ -289,4 +283,3 @@ export interface UserSettings {
   createdAt?: string;
   updatedAt?: string;
 }
-

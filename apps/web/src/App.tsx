@@ -10,7 +10,9 @@ import { AskChat } from "./components/AskChat";
 import { SearchModal } from "./components/SearchModal";
 import { BillingView } from "./components/BillingView";
 import { SettingsView } from "./components/SettingsView";
-import { Skeleton, ToastProvider, useToast } from "./components/ui";
+import { Skeleton, Spinner, ToastProvider, useToast } from "./components/ui";
+import { AuthScreen } from "./components/AuthScreen";
+import { AuthProvider, useAuth } from "./auth/AuthContext";
 import {
   createMeeting,
   deleteMeeting,
@@ -29,12 +31,45 @@ type View = AppView | "detail";
 export function App() {
   return (
     <ToastProvider>
-      <AppContent />
+      <AuthProvider>
+        <AuthGate />
+      </AuthProvider>
     </ToastProvider>
   );
 }
 
-function AppContent() {
+/** Real login is required unless the build is the offline demo (VITE_DEMO_MODE). */
+function AuthGate() {
+  const { t } = useTranslation();
+  const { status, user, logout } = useAuth();
+
+  if (status === "loading") {
+    return (
+      <main className="flex min-h-dvh items-center justify-center gap-3 bg-app text-sm text-fg-muted">
+        <Spinner />
+        <span>{t("auth.loading")}</span>
+      </main>
+    );
+  }
+  if (status === "anonymous" || !user) return <AuthScreen />;
+  return (
+    <AppContent
+      userName={user.name || user.email}
+      isAdmin={Boolean(user.isPlatformAdmin)}
+      onLogout={() => void logout()}
+    />
+  );
+}
+
+function AppContent({
+  userName,
+  isAdmin,
+  onLogout,
+}: {
+  userName: string;
+  isAdmin: boolean;
+  onLogout: () => void;
+}) {
   const { t, i18n } = useTranslation();
   const { toast } = useToast();
   const { theme, toggleTheme } = useTheme();
@@ -189,6 +224,8 @@ function AppContent() {
       onOpenSearch={() => setSearchOpen(true)}
       onToggleTheme={toggleTheme}
       onChangeLanguage={(next) => setLanguage(next)}
+      userName={userName}
+      onLogout={onLogout}
     >
       <div key={view} className="animate-page">
         {view === "detail" ? (
@@ -253,7 +290,7 @@ function AppContent() {
             />
           </div>
         ) : view === "billing" ? (
-          <BillingView />
+          <BillingView isAdmin={isAdmin} />
         ) : view === "settings" ? (
           <SettingsView />
         ) : (

@@ -22,31 +22,41 @@ describe("Auth API (/api/auth/*)", () => {
 
   const mockPrisma = {
     user: {
-      findUnique: vi.fn().mockImplementation(({ where }: { where: { email?: string; id?: string } }) => {
-        if (where.email) {
-          for (const u of mockUsers.values()) {
-            if (u.email === where.email) return Promise.resolve(u);
+      findUnique: vi
+        .fn()
+        .mockImplementation(({ where }: { where: { email?: string; id?: string } }) => {
+          if (where.email) {
+            for (const u of mockUsers.values()) {
+              if (u.email === where.email) return Promise.resolve(u);
+            }
           }
-        }
-        if (where.id) {
-          return Promise.resolve(mockUsers.get(where.id) || null);
-        }
-        return Promise.resolve(null);
-      }),
-      create: vi.fn().mockImplementation(({ data }: { data: { email: string; name: string; passwordHash: string; role?: Role } }) => {
-        const id = `user-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-        const user = {
-          id,
-          email: data.email,
-          name: data.name,
-          passwordHash: data.passwordHash,
-          role: data.role || Role.OWNER,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        };
-        mockUsers.set(id, user);
-        return Promise.resolve(user);
-      }),
+          if (where.id) {
+            return Promise.resolve(mockUsers.get(where.id) || null);
+          }
+          return Promise.resolve(null);
+        }),
+      create: vi
+        .fn()
+        .mockImplementation(
+          ({
+            data,
+          }: {
+            data: { email: string; name: string; passwordHash: string; role?: Role };
+          }) => {
+            const id = `user-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+            const user = {
+              id,
+              email: data.email,
+              name: data.name,
+              passwordHash: data.passwordHash,
+              role: data.role || Role.OWNER,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            };
+            mockUsers.set(id, user);
+            return Promise.resolve(user);
+          },
+        ),
     },
   } as unknown as PrismaClient;
 
@@ -162,5 +172,7 @@ describe("Auth API (/api/auth/*)", () => {
 
     expect(meRes.statusCode).toBe(200);
     expect(meRes.json().user.email).toBe("ahmed@example.com");
+    // Admin flag comes from the DB, defaulting to false for regular users.
+    expect(meRes.json().user.isPlatformAdmin).toBe(false);
   });
 });

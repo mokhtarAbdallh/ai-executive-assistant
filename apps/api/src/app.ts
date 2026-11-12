@@ -4,8 +4,7 @@ import helmet from "@fastify/helmet";
 import cookie from "@fastify/cookie";
 import { S3Client } from "@aws-sdk/client-s3";
 import { API_PREFIX } from "@dawwen/shared";
-import type {
-  PrismaClient} from "@dawwen/db";
+import type { PrismaClient } from "@dawwen/db";
 import {
   getPrismaClient,
   SettingsRepository,
@@ -38,10 +37,7 @@ import { createAuthMiddleware } from "./auth/middleware.js";
 import type { IAuthProvider } from "./auth/types.js";
 import { HkdfKeyProvider, TokenEncryptor } from "@dawwen/shared";
 import type { EmbeddingClient } from "@dawwen/llm";
-import {
-  type CalendarProvider,
-  FakeCalendarProvider,
-} from "./services/calendar.js";
+import { type CalendarProvider, FakeCalendarProvider } from "./services/calendar.js";
 import { ProposalExecutor } from "./services/proposal-executor.js";
 import { SearchService } from "./services/search.js";
 import { AgentService } from "./services/agent.js";
@@ -70,15 +66,15 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   });
 
   const prisma = opts.prisma ?? getPrismaClient();
-  const appSecret = opts.appSecret ?? process.env.APP_SECRET ?? "dawwen-default-dev-secret-32-chars-long";
+  const appSecret =
+    opts.appSecret ?? process.env.APP_SECRET ?? "dawwen-default-dev-secret-32-chars-long";
 
   let authProvider: IAuthProvider;
   let localAuthProvider: LocalAuthProvider;
 
   if (opts.authProvider) {
     authProvider = opts.authProvider;
-    localAuthProvider =
-      opts.localAuthProvider ?? new LocalAuthProvider(prisma, appSecret);
+    localAuthProvider = opts.localAuthProvider ?? new LocalAuthProvider(prisma, appSecret);
   } else if (process.env.AUTH_PROVIDER === "cognito") {
     if (!process.env.COGNITO_USER_POOL_ID) {
       throw new Error(
@@ -92,8 +88,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     });
     localAuthProvider = new LocalAuthProvider(prisma, appSecret);
   } else {
-    localAuthProvider =
-      opts.localAuthProvider ?? new LocalAuthProvider(prisma, appSecret);
+    localAuthProvider = opts.localAuthProvider ?? new LocalAuthProvider(prisma, appSecret);
     authProvider = localAuthProvider;
   }
 
@@ -119,7 +114,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const reminderRepository = new ReminderRepository(prisma);
   const creditRepository = new CreditRepository(prisma);
 
-  const secret = opts.appSecret || process.env.APP_SECRET || "default-app-secret-at-least-32-characters-long!";
+  const secret =
+    opts.appSecret || process.env.APP_SECRET || "default-app-secret-at-least-32-characters-long!";
   const keyProvider = new HkdfKeyProvider(secret);
   const tokenEncryptor = new TokenEncryptor(keyProvider);
 
@@ -152,8 +148,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   });
   const audioBucket = process.env.AUDIO_BUCKET;
 
-  const paymentProvider =
-    opts.paymentProvider ?? new ManualPaymentAdapter(creditRepository);
+  const paymentProvider = opts.paymentProvider ?? new ManualPaymentAdapter(creditRepository);
   const dataManagementService =
     opts.dataManagementService ??
     new DataManagementService({
@@ -167,7 +162,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   await app.register(
     async (api) => {
       await api.register(healthRoutes);
-      await api.register(authRoutes, { localAuthProvider });
+      await api.register(authRoutes, { localAuthProvider, prisma });
       await api.register(settingsRoutes, { settingsRepository, dataManagementService });
       await api.register(consentRoutes, { consentRepository });
       await api.register(proposalRoutes, { proposalRepository, proposalExecutor });
