@@ -40,6 +40,8 @@ enum TaskStatus {
 enum ProposalStatus {
   PENDING_APPROVAL
   APPROVED
+  /// Claimed by exactly one executor; side effect in flight (ADR-022).
+  EXECUTING
   EXECUTED
   REJECTED
   FAILED

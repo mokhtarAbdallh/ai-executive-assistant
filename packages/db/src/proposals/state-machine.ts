@@ -22,31 +22,51 @@ export class UnauthorizedProposalExecutionError extends Error {
 }
 
 /**
- * Valid transitions:
- * PENDING_APPROVAL -> APPROVED (only by authenticated user)
- * PENDING_APPROVAL -> REJECTED (only by authenticated user)
- * APPROVED -> EXECUTED (only after approval has occurred)
- * APPROVED -> FAILED (if external executor encounters error)
+ * Thrown when a proposal could not be claimed for execution because another
+ * request already claimed (or finished) it. Maps to HTTP 409.
  */
-export function canTransitionProposal(
-  from: ProposalStatus,
-  to: ProposalStatus,
-): boolean {
-  if (from === ProposalStatus.PENDING_APPROVAL) {
-    return to === ProposalStatus.APPROVED || to === ProposalStatus.REJECTED;
+export class ProposalAlreadyClaimedError extends Error {
+  constructor(public readonly proposalId: string) {
+    super(`Proposal '${proposalId}' is already being executed or is no longer approvable.`);
+    this.name = "ProposalAlreadyClaimedError";
   }
-  if (from === ProposalStatus.APPROVED) {
-    return to === ProposalStatus.EXECUTED || to === ProposalStatus.FAILED;
-  }
-  return false;
 }
 
-export function validateProposalTransition(
-  from: ProposalStatus,
-  to: ProposalStatus,
-): void {
-  // Hard Invariant 1: Direct transition from PENDING_APPROVAL to EXECUTED is strictly forbidden
-  if (from === ProposalStatus.PENDING_APPROVAL && to === ProposalStatus.EXECUTED) {
+/**
+ * Valid transitions (ADR-004, ADR-022):
+ * PENDING_APPROVAL -> APPROVED  (only by authenticated user)
+ * PENDING_APPROVAL -> REJECTED  (only by authenticated user)
+ * APPROVED         -> EXECUTING (atomic claim by exactly one executor)
+ * APPROVED         -> REJECTED  (user changes their mind before execution)
+ * EXECUTING        -> EXECUTED  (side effect succeeded)
+ * EXECUTING        -> FAILED    (side effect failed)
+ */
+const TRANSITIONS: Readonly<Record<ProposalStatus, readonly ProposalStatus[]>> = {
+  [ProposalStatus.PENDING_APPROVAL]: [ProposalStatus.APPROVED, ProposalStatus.REJECTED],
+  [ProposalStatus.APPROVED]: [ProposalStatus.EXECUTING, ProposalStatus.REJECTED],
+  [ProposalStatus.EXECUTING]: [ProposalStatus.EXECUTED, ProposalStatus.FAILED],
+  [ProposalStatus.EXECUTED]: [],
+  [ProposalStatus.REJECTED]: [],
+  [ProposalStatus.FAILED]: [],
+};
+
+export function canTransitionProposal(from: ProposalStatus, to: ProposalStatus): boolean {
+  return TRANSITIONS[from].includes(to);
+}
+
+/** Statuses from which a transition to `to` is allowed (used for atomic conditional updates). */
+export function allowedSourceStatuses(to: ProposalStatus): ProposalStatus[] {
+  return (Object.keys(TRANSITIONS) as ProposalStatus[]).filter((from) =>
+    TRANSITIONS[from].includes(to),
+  );
+}
+
+export function validateProposalTransition(from: ProposalStatus, to: ProposalStatus): void {
+  // Hard Invariant 1: a side effect may never start without an approval.
+  if (
+    from === ProposalStatus.PENDING_APPROVAL &&
+    (to === ProposalStatus.EXECUTING || to === ProposalStatus.EXECUTED)
+  ) {
     throw new UnauthorizedProposalExecutionError();
   }
 

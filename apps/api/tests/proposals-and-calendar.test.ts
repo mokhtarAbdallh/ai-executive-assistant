@@ -8,6 +8,7 @@ import { FakeCalendarProvider } from "../src/services/calendar.js";
 import { ProposalExecutor, ProposalNotApprovedError } from "../src/services/proposal-executor.js";
 import { ProposalRepository, CalendarConnectionRepository } from "@dawwen/db";
 import { HkdfKeyProvider, TokenEncryptor } from "@dawwen/shared";
+import { proposalUpdateMany } from "./helpers/proposal-store.js";
 
 describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
   let app: FastifyInstance;
@@ -35,6 +36,7 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
       }),
     },
     proposal: {
+      updateMany: vi.fn().mockImplementation(proposalUpdateMany(proposalsStore)),
       create: vi.fn().mockImplementation(({ data }: { data: any }) => {
         const id = `prop-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         const record: Proposal = {
@@ -256,9 +258,43 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
       },
     });
 
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(409);
     const body = res.json();
-    expect(body.error).toContain("must be approved by authenticated user first");
+    expect(body.message).toContain("must be approved by authenticated user first");
+  });
+
+  it("Concurrent approvals of the same proposal book the calendar exactly once", async () => {
+    const id = "prop-double-click";
+    proposalsStore.set(id, {
+      id,
+      userId: aliceId,
+      meetingId: null,
+      actionType: ProposalActionType.SCHEDULE_MEETING,
+      payload: { title: "Double click", proposedDatetime: "2026-12-01T10:00:00.000Z" },
+      status: ProposalStatus.PENDING_APPROVAL,
+      reason: null,
+      executedAt: null,
+      error: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const createEvent = vi.spyOn(fakeCalendar, "createEvent");
+    createEvent.mockClear();
+
+    const responses = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        app.inject({
+          method: "POST",
+          url: `/api/proposals/${id}/approve?execute=true`,
+          headers: { authorization: `Bearer ${aliceToken}` },
+        }),
+      ),
+    );
+
+    const codes = responses.map((r) => r.statusCode).sort();
+    expect(codes).toEqual([200, 409, 409, 409, 409]);
+    expect(createEvent).toHaveBeenCalledTimes(1);
+    expect(proposalsStore.get(id)?.status).toBe(ProposalStatus.EXECUTED);
   });
 
   it("Rejecting a proposal transitions status to REJECTED with reason and cannot be booked", async () => {
@@ -297,7 +333,7 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
       url: "/api/proposals/prop-ai-1/approve",
       headers: { authorization: `Bearer ${bobToken}` },
     });
-    expect(approveRes.statusCode).toBe(400);
+    expect(approveRes.statusCode).toBe(404);
 
     // Bob attempts to fetch Alice's proposal
     const getRes = await app.inject({
@@ -305,7 +341,7 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
       url: "/api/proposals/prop-ai-1",
       headers: { authorization: `Bearer ${bobToken}` },
     });
-    expect(getRes.statusCode).toBe(403);
+    expect(getRes.statusCode).toBe(404);
   });
 
   it("Calendar API: returns auth URL and allows connecting Google Calendar", async () => {

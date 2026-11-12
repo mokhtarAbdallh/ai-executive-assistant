@@ -5,6 +5,7 @@ import { LocalAuthProvider } from "../src/auth/local.provider.js";
 import { Role, ProposalActionType, ProposalStatus, ReminderStatus } from "@dawwen/db";
 import type { Proposal, PrismaClient, FollowUpDraft, Reminder, Meeting } from "@dawwen/db";
 import { FakeCalendarProvider } from "../src/services/calendar.js";
+import { proposalUpdateMany } from "./helpers/proposal-store.js";
 
 describe("Phase 5: Follow-up & Ask Chat Agent Invariants", () => {
   let app: FastifyInstance;
@@ -181,6 +182,7 @@ describe("Phase 5: Follow-up & Ask Chat Agent Invariants", () => {
       }),
     },
     proposal: {
+      updateMany: vi.fn().mockImplementation(proposalUpdateMany(proposalsStore)),
       create: vi.fn().mockImplementation(({ data }: any) => {
         const id = `prop-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         const record: Proposal = {

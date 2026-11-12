@@ -5,6 +5,7 @@ import { LocalAuthProvider } from "../src/auth/local.provider.js";
 import { Role, ProposalActionType, ProposalStatus } from "@dawwen/db";
 
 import type { Proposal, PrismaClient } from "@dawwen/db";
+import { proposalUpdateMany } from "./helpers/proposal-store.js";
 
 describe("API Tenant Isolation: A user can never read or modify another user's data", () => {
   let app: FastifyInstance;
@@ -62,6 +63,7 @@ describe("API Tenant Isolation: A user can never read or modify another user's d
       }),
     },
     proposal: {
+      updateMany: vi.fn().mockImplementation(proposalUpdateMany(proposalsStore)),
       findUnique: vi.fn().mockImplementation(({ where }: { where: { id: string } }) => {
         return Promise.resolve(proposalsStore.get(where.id) || null);
       }),
@@ -144,15 +146,15 @@ describe("API Tenant Isolation: A user can never read or modify another user's d
     expect(proposals[0].userId).toBe(bobId);
   });
 
-  it("User B is blocked from approving User A's proposal (400 Cross-tenant violation)", async () => {
+  it("User B is blocked from approving User A's proposal (404, existence not revealed)", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/proposals/prop-alice-1/approve",
       headers: { authorization: `Bearer ${bobToken}` },
     });
 
-    expect(res.statusCode).toBe(400);
-    expect(res.json().message).toContain("Cross-tenant access violation");
+    expect(res.statusCode).toBe(404);
+    expect(res.json().message).toBe("Proposal not found");
 
     // Alice's proposal remains PENDING_APPROVAL
     expect(proposalsStore.get("prop-alice-1")!.status).toBe(ProposalStatus.PENDING_APPROVAL);

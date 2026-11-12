@@ -1,5 +1,12 @@
 import type { Proposal, TenantContext } from "@dawwen/db";
-import { ProposalStatus, ProposalActionType, ReminderStatus } from "@dawwen/db";
+import {
+  ProposalStatus,
+  ProposalActionType,
+  ReminderStatus,
+  ProposalNotFoundError,
+  ProposalAlreadyClaimedError,
+  InvalidProposalTransitionError,
+} from "@dawwen/db";
 import type { Priority } from "@prisma/client";
 import type {
   ProposalRepository,
@@ -28,6 +35,16 @@ export class ProposalNotApprovedError extends Error {
   }
 }
 
+export class ProposalExecutionFailedError extends Error {
+  constructor(
+    public readonly proposalId: string,
+    public readonly reason: string,
+  ) {
+    super(`Proposal execution failed: ${reason}`);
+    this.name = "ProposalExecutionFailedError";
+  }
+}
+
 export class ProposalExecutor {
   private readonly notificationProvider: NotificationProvider;
 
@@ -45,35 +62,48 @@ export class ProposalExecutor {
   }
 
   /**
-   * Hard Invariant 1:
-   * Only executes if authenticated user has approved the proposal.
+   * Hard Invariant 1: only executes a proposal the authenticated user approved.
+   *
+   * Exactly-once (ADR-022): the proposal is claimed with an atomic
+   * APPROVED -> EXECUTING update BEFORE any side effect runs. Concurrent or
+   * repeated approvals lose the claim and get ProposalAlreadyClaimedError, so a
+   * meeting is never booked (or an email sent) twice.
    */
   async approveAndExecute(
     context: TenantContext,
     proposalId: string,
   ): Promise<ExecutionResult> {
-    const proposal = await this.proposalRepository.findById(context, proposalId);
-    if (!proposal) {
-      throw new Error(`Proposal '${proposalId}' not found.`);
+    const existing = await this.proposalRepository.findById(context, proposalId);
+    if (!existing) {
+      throw new ProposalNotFoundError(proposalId);
     }
 
-    // Must be in PENDING_APPROVAL or already APPROVED
     if (
-      proposal.status !== ProposalStatus.PENDING_APPROVAL &&
-      proposal.status !== ProposalStatus.APPROVED
+      existing.status !== ProposalStatus.PENDING_APPROVAL &&
+      existing.status !== ProposalStatus.APPROVED
     ) {
-      throw new ProposalNotApprovedError(proposalId, proposal.status);
+      throw new ProposalNotApprovedError(proposalId, existing.status);
     }
 
-    // Transition to APPROVED first if still PENDING_APPROVAL
-    if (proposal.status === ProposalStatus.PENDING_APPROVAL) {
-      await this.proposalRepository.approve(context, proposalId);
+    if (existing.status === ProposalStatus.PENDING_APPROVAL) {
+      try {
+        await this.proposalRepository.approve(context, proposalId);
+      } catch (err) {
+        // Another request approved (or rejected) it first; the claim below decides.
+        if (
+          !(err instanceof ProposalAlreadyClaimedError) &&
+          !(err instanceof InvalidProposalTransitionError)
+        ) {
+          throw err;
+        }
+      }
     }
 
-    // Now execute based on actionType
+    // Atomic claim — throws for every caller except one.
+    const proposal = await this.proposalRepository.claimForExecution(context, proposalId);
+
+    let executionDetails: Record<string, unknown>;
     try {
-      let executionDetails: Record<string, unknown> = {};
-
       switch (proposal.actionType) {
         case ProposalActionType.SCHEDULE_MEETING:
           executionDetails = await this.executeScheduleMeeting(context, proposal);
@@ -88,26 +118,23 @@ export class ProposalExecutor {
           executionDetails = await this.executeCreateTask(context, proposal);
           break;
         default:
-          executionDetails = {
-            executed: true,
-            message: `Proposal action '${proposal.actionType}' handled.`,
-          };
+          throw new Error(`Unsupported proposal action '${String(proposal.actionType)}'.`);
       }
-
-      await this.proposalRepository.markExecuted(context, proposalId);
-
-      return {
-        proposalId,
-        actionType: proposal.actionType,
-        status: ProposalStatus.EXECUTED,
-        executedAt: new Date(),
-        details: executionDetails,
-      };
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       await this.proposalRepository.markFailed(context, proposalId, errMsg);
-      throw new Error(`Proposal execution failed: ${errMsg}`);
+      throw new ProposalExecutionFailedError(proposalId, errMsg);
     }
+
+    const executed = await this.proposalRepository.markExecuted(context, proposalId);
+
+    return {
+      proposalId,
+      actionType: proposal.actionType,
+      status: ProposalStatus.EXECUTED,
+      executedAt: executed.executedAt ?? new Date(),
+      details: executionDetails,
+    };
   }
 
   async rejectProposal(
