@@ -3,19 +3,28 @@ import { z } from "zod";
 import type { CalendarConnectionRepository, PrismaClient } from "@dawwen/db";
 import type { CalendarProvider } from "../services/calendar.js";
 import type { TokenEncryptor, GoogleOAuthTokens } from "@dawwen/shared";
+import { createOAuthState, verifyOAuthState } from "../services/oauth-state.js";
 
 interface CalendarRoutesOptions {
   calendarConnectionRepository: CalendarConnectionRepository;
   calendarProvider: CalendarProvider;
   tokenEncryptor: TokenEncryptor;
   prisma: PrismaClient;
+  /** Secret used to sign the OAuth `state` (derived from APP_SECRET). */
+  stateSecret: string;
+}
+
+/** Public origin for OAuth redirects (behind the ALB the Host may be internal, ADR-017). */
+function publicBaseUrl(request: { protocol: string; hostname: string }): string {
+  return process.env.PUBLIC_BASE_URL || `${request.protocol}://${request.hostname}`;
 }
 
 export async function calendarRoutes(
   fastify: FastifyInstance,
   options: CalendarRoutesOptions,
 ): Promise<void> {
-  const { calendarConnectionRepository, calendarProvider, tokenEncryptor, prisma } = options;
+  const { calendarConnectionRepository, calendarProvider, tokenEncryptor, prisma, stateSecret } =
+    options;
 
   // 1. Connection Status
   fastify.get(
@@ -52,59 +61,57 @@ export async function calendarRoutes(
     { preHandler: [fastify.authenticate] },
     async (request, reply) => {
       const user = request.user!;
-      const state = Buffer.from(JSON.stringify({ userId: user.id, timestamp: Date.now() })).toString(
-        "base64",
-      );
-      // Behind an ALB the request hostname may be an internal DNS name; PUBLIC_BASE_URL
-      // (when set) is the canonical https origin for OAuth redirects (ADR-017).
-      const baseUrl = process.env.PUBLIC_BASE_URL || `${request.protocol}://${request.hostname}`;
-      const redirectUri = `${baseUrl}/api/calendar/callback`;
+      const state = createOAuthState(stateSecret, user.id);
+      const redirectUri = `${publicBaseUrl(request)}/api/calendar/callback`;
       const authUrl = calendarProvider.getAuthUrl(state, redirectUri);
       return reply.send({ authUrl });
     },
   );
 
-  // 3. Callback / Connect
-  const CallbackSchema = z.object({
-    code: z.string().min(1),
-    redirectUri: z.string().optional(),
+  // 3. OAuth callback. Google redirects the browser here with GET ?code&state —
+  // there is no Bearer token, so the signed state identifies the user (ADR-023).
+  // The browser is sent back to the web app with ?calendar=connected|error.
+  const CallbackQuerySchema = z.object({
+    code: z.string().min(1).optional(),
+    state: z.string().min(1).max(2048).optional(),
+    error: z.string().optional(),
   });
 
-  fastify.post(
-    "/calendar/callback",
-    { preHandler: [fastify.authenticate] },
-    async (request, reply) => {
-      const user = request.user!;
-      const parsed = CallbackSchema.safeParse(request.body);
-      if (!parsed.success) {
-        return reply.status(400).send({ error: "Invalid callback payload", details: parsed.error.format() });
-      }
+  fastify.get("/calendar/callback", async (request, reply) => {
+    const back = (result: "connected" | "error") =>
+      reply.redirect(`${process.env.PUBLIC_BASE_URL ?? ""}/?calendar=${result}`);
 
-      const baseUrl = process.env.PUBLIC_BASE_URL || `${request.protocol}://${request.hostname}`;
-      const redirectUri =
-        parsed.data.redirectUri || `${baseUrl}/api/calendar/callback`;
+    const parsed = CallbackQuerySchema.safeParse(request.query);
+    if (!parsed.success || !parsed.data.code || !parsed.data.state || parsed.data.error) {
+      return back("error");
+    }
 
+    let userId: string;
+    try {
+      userId = verifyOAuthState(stateSecret, parsed.data.state);
+    } catch (err) {
+      request.log.warn({ reason: (err as Error).message }, "calendar callback rejected");
+      return back("error");
+    }
+
+    try {
+      const redirectUri = `${publicBaseUrl(request)}/api/calendar/callback`;
       const tokens = await calendarProvider.exchangeCode(parsed.data.code, redirectUri);
-      const encryptedTokens = await tokenEncryptor.encrypt(tokens);
-
-      const connection = await calendarConnectionRepository.upsertConnection(
-        { userId: user.id },
+      await calendarConnectionRepository.upsertConnection(
+        { userId },
         {
           provider: "google",
-          encryptedTokens,
+          encryptedTokens: await tokenEncryptor.encrypt(tokens),
           calendarId: "primary",
           syncStatus: "connected",
         },
       );
-
-      return reply.send({
-        success: true,
-        connectionId: connection.id,
-        connected: true,
-        lastSyncedAt: connection.updatedAt.toISOString(),
-      });
-    },
-  );
+    } catch (err) {
+      request.log.error({ userId, err: (err as Error).message }, "calendar connect failed");
+      return back("error");
+    }
+    return back("connected");
+  });
 
   // 4. Disconnect
   fastify.post(

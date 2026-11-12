@@ -74,7 +74,10 @@ function AppContent({
   const { toast } = useToast();
   const { theme, toggleTheme } = useTheme();
 
-  const [view, setView] = useState<View>("meetings");
+  // Returning from Google's consent screen lands on /?calendar=... (ADR-023).
+  const [view, setView] = useState<View>(() =>
+    new URLSearchParams(window.location.search).has("calendar") ? "calendar" : "meetings",
+  );
   const [meetingTab, setMeetingTab] = useState<MeetingTab>("summary");
   const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
   const [pendingProposalsCount, setPendingProposalsCount] = useState(0);

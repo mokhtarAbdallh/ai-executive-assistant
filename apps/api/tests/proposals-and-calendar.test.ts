@@ -374,16 +374,16 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
     expect(authUrlRes.statusCode).toBe(200);
     expect(authUrlRes.json().authUrl).toContain("/api/calendar/callback");
 
-    // Connect via callback
+    // Google redirects the browser (no Bearer token) to GET /callback?code&state.
+    const authUrl = new URL(authUrlRes.json().authUrl, "http://localhost");
+    const state = authUrl.searchParams.get("state")!;
     const callbackRes = await app.inject({
-      method: "POST",
-      url: "/api/calendar/callback",
-      headers: { authorization: `Bearer ${aliceToken}` },
-      payload: { code: "demo_google_code" },
+      method: "GET",
+      url: `/api/calendar/callback?code=demo_google_code&state=${encodeURIComponent(state)}`,
     });
 
-    expect(callbackRes.statusCode).toBe(200);
-    expect(callbackRes.json().connected).toBe(true);
+    expect(callbackRes.statusCode).toBe(302);
+    expect(callbackRes.headers.location).toContain("calendar=connected");
 
     // Status shows connected
     const statusRes = await app.inject({
@@ -393,6 +393,20 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
     });
     expect(statusRes.statusCode).toBe(200);
     expect(statusRes.json().connected).toBe(true);
+  });
+
+  it("Calendar callback rejects a forged or tampered state (ADR-023)", async () => {
+    const forged = Buffer.from(
+      JSON.stringify({ userId: "victim", timestamp: Date.now() }),
+    ).toString("base64");
+    for (const state of [forged, "abc.def", ""]) {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/calendar/callback?code=x&state=${encodeURIComponent(state)}`,
+      });
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toContain("calendar=error");
+    }
   });
 
   it("Calendar API: lists unified events for the calendar view", async () => {

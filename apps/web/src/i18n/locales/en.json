@@ -324,7 +324,8 @@
       "summarized": "Summarized",
       "processing": "Processing",
       "needs_review": "Needs review"
-    }
+    },
+    "connectFailed": "We couldn't connect your calendar. Please try again."
   },
   "proposals": {
     "title": "Proposals inbox",

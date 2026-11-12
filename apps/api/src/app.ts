@@ -187,6 +187,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
         calendarProvider,
         tokenEncryptor,
         prisma,
+        stateSecret: secret,
       });
       await api.register(uploadRoutes, {
         meetingRepository,

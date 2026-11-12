@@ -17,7 +17,7 @@ import type {
   UserSettings,
 } from "./types";
 
-import { apiFetch, getAccessToken, setAccessToken, IS_DEMO_MODE } from "./lib/http";
+import { apiFetch, apiJson, getAccessToken, setAccessToken, IS_DEMO_MODE } from "./lib/http";
 
 // In-memory demo store for seamless offline/standalone browser verification
 const DEMO_MEETINGS_STORE: MeetingDetail[] = [
@@ -729,18 +729,17 @@ export async function fetchCalendarStatus(): Promise<CalendarConnectionStatus> {
   };
 }
 
-export async function connectCalendar(
-  code = "demo_code",
-): Promise<{ success: boolean; connected: boolean }> {
+/**
+ * Starts Google's OAuth consent screen (ADR-023). The browser leaves the app and
+ * comes back to `/?calendar=connected|error` via GET /api/calendar/callback.
+ * Resolves only in demo mode, where the connection is simulated in place.
+ */
+export async function connectCalendar(): Promise<{ success: boolean; connected: boolean }> {
   try {
-    const res = await authFetch("/api/calendar/callback", {
-      method: "POST",
-      body: JSON.stringify({ code }),
-    });
-    if (res.ok) {
-      DEMO_CALENDAR_CONNECTED = true;
-      DEMO_LAST_SYNCED = new Date().toISOString();
-      return res.json();
+    const { authUrl } = await apiJson<{ authUrl: string }>("/api/calendar/auth-url");
+    if (!IS_DEMO_MODE) {
+      window.location.assign(authUrl);
+      return new Promise(() => {}); // the page is navigating away
     }
   } catch (err) {
     rethrowUnlessDemo(err);
