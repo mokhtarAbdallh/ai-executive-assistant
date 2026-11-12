@@ -242,3 +242,25 @@ visual language in both themes and both languages.
   `apps/worker/prompts`.
 - Worker runtime image includes ffmpeg for the ADR-018 audio pre-processing.
 
+## ADR-022: Phase-1 hardening — exactly-once proposals, atomic credits, admin top-up, real web auth
+
+- **Proposals:** new `EXECUTING` status. Execution first claims the row with a conditional
+  `updateMany` (`APPROVED → EXECUTING`); only the single winner runs the side effect, then marks
+  `EXECUTED` or `FAILED`. Concurrent/duplicate approvals get **409**; cross-tenant ids get **404**.
+- **Credits:** reserve and settle are single conditional SQL statements (`credit.sql.ts`).
+  Reserve fails instead of over-committing; settle charges at most the available balance and
+  reports the shortfall (logged by the worker) — the balance never goes negative.
+  Reserve-before-processing in the worker is deferred to Phase 2.
+- **Top-up:** only users with `users.isPlatformAdmin` (re-read from the DB per request) may
+  credit an account, addressed by `userEmail`; capped at $100k per call. Grant with
+  `pnpm --filter @dawwen/db admin:grant <email> [--revoke]`. `/api/auth/me` exposes the flag so
+  the UI shows the admin form; regular users see transfer instructions only.
+- **Web auth:** real login/register screen; the access token is sent as Bearer and refreshed once
+  per 401 (shared in-flight) through the httpOnly refresh cookie; failed refresh → login screen.
+  Credential endpoints (login/register/refresh/logout) never trigger a refresh.
+- **Demo data** (auto-login + sample fallbacks) is served only when built with
+  `VITE_DEMO_MODE=true`; otherwise every API failure surfaces as an error. Playwright starts its
+  own demo dev server on port 5175.
+- **Tests:** real-Postgres concurrency tests (`*.db.test.ts`, gated by `TEST_DATABASE_URL`) run in
+  CI against a pgvector service after `prisma migrate deploy`.
+- Cognito stays off (local JWT auth) for now; server-side refresh-token revocation is Phase 2.

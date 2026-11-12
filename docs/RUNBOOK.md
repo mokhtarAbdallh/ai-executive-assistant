@@ -24,6 +24,7 @@ Internet
 ```
 
 ### Critical Infrastructure Ports & Contracts
+
 - **Web Service:** Listens on port `3000`. Health check: `GET /` (expecting 200).
 - **API Service:** Listens on port `8080`. Health check: `GET /api/health` (expecting 200 with `{ status: "ok" }`).
 - **S3 Key Convention:** Raw audio uploads **must** be stored under prefix `uploads/{userId}/{meetingId}/{fileName}` to match the S3 7-day auto-expiry lifecycle rule (`filter { prefix = "uploads/" }`).
@@ -36,6 +37,7 @@ Internet
 Before executing Terraform or deploying containers to a real AWS account:
 
 ### A. AWS Bedrock Model Access
+
 1. Open the AWS Console in the deployment region (`eu-central-1` or `us-east-1`).
 2. Navigate to **Amazon Bedrock** → **Model access**.
 3. Ensure access is granted for:
@@ -43,18 +45,22 @@ Before executing Terraform or deploying containers to a real AWS account:
    - **Amazon Titan Embeddings G1 - Text** (`amazon.titan-embed-text-v1` or `v2`)
 
 ### B. ACM SSL Certificate
+
 1. Request an ACM public certificate for your custom domain (e.g., `dawwen.ai` and `*.dawwen.ai`).
 2. Complete DNS validation in Route 53 or your DNS registrar.
 3. Note the Certificate ARN and supply it to Terraform variable `certificate_arn`.
 
 ### C. AWS Secrets Manager Credentials
+
 Terraform (`infra/terraform/ecs.tf` + `database.tf`) references secrets in Secrets Manager under prefix `${project}-${environment}`:
+
 1. `app-secret`: 64-character random string (e.g., `openssl rand -hex 32`). Used for JWT signing and token encryption.
 2. `google-oauth`: JSON string `{"client_id": "<ID>", "client_secret": "<SECRET>"}` from Google Cloud Console.
 3. `asr-api-key`: ElevenLabs API key string (`xi-api-key`).
 4. `asr-http-api-key`: optional shared key for the self-hosted QwenCleo ASR server (ADR-018); required only when `ASR_PROVIDER=qwencleo-http` and the server is configured to expect a key.
 
 ### D. Self-hosted ASR + Notifications (optional)
+
 - `ASR_PROVIDER=qwencleo-http` points the worker at the self-hosted QwenCleo FastAPI server
   (`asr_http_url` variable, e.g. `http://server.internal:8000`). The worker pre-processes audio to
   16 kHz mono WAV chunks, so the GPU server only needs the `POST /v1/transcribe` contract (ADR-018).
@@ -71,6 +77,7 @@ Terraform (`infra/terraform/ecs.tf` + `database.tf`) references secrets in Secre
 Prisma migrations must be applied before routing traffic to new API or worker revisions.
 
 ### Migration Execution Procedure
+
 Run a one-off ECS Fargate task or run via an administrative bastion / CI pipeline:
 
 ```bash
@@ -90,6 +97,7 @@ psql "$DATABASE_URL" -c "\d meeting_embeddings;"
 ## 4. Deployment Sequence
 
 ### Step 1: Validate Infrastructure
+
 ```bash
 cd infra/terraform
 terraform init
@@ -99,6 +107,7 @@ terraform apply tfplan
 ```
 
 ### Step 2: Build & Push Container Images
+
 ```bash
 # Authenticate Docker to AWS ECR
 aws ecr get-login-password --region eu-central-1 | docker login --username AWS --password-stdin <ACCOUNT_ID>.dkr.ecr.eu-central-1.amazonaws.com
@@ -115,7 +124,9 @@ docker push <ACCOUNT_ID>.dkr.ecr.eu-central-1.amazonaws.com/meeting-assistant-de
 ```
 
 ### Step 3: Trigger ECS Deployment
+
 Update ECS services with the new image tags:
+
 ```bash
 aws ecs update-service --cluster meeting-assistant-dev --service meeting-assistant-dev-web --force-new-deployment
 aws ecs update-service --cluster meeting-assistant-dev --service meeting-assistant-dev-api --force-new-deployment
@@ -123,6 +134,7 @@ aws ecs update-service --cluster meeting-assistant-dev --service meeting-assista
 ```
 
 ### Step 4: Validate Health Checks
+
 ```bash
 # 1. API Health endpoint via ALB
 curl -f https://api.yourdomain.com/api/health
@@ -138,6 +150,7 @@ aws elbv2 describe-target-health --target-group-arn <WEB_TARGET_GROUP_ARN>
 ## 5. Monitoring & Alerting
 
 Actual alarms created by `infra/terraform/alarms.tf` (SNS topic `${project}-${environment}-alarms`):
+
 1. **Audio DLQ age (`${project}-${environment}-audio-dlq-age`):**
    `ApproximateAgeOfOldestMessage > 900 s` on the audio DLQ for 2 evaluations — messages reached the
    DLQ after exhausting retries; meetings stay `TRANSCRIBING/ANALYZING` until the sweeper fails them
@@ -151,7 +164,9 @@ Actual alarms created by `infra/terraform/alarms.tf` (SNS topic `${project}-${en
    - Alarm if `HTTPCode_Target_5XX_Count > 10` in 5 minutes.
 
 ### Structured Log Analysis in CloudWatch Logs Insights
+
 Filter logs for error events without printing sensitive data:
+
 ```sql
 fields @timestamp, @message
 | filter @logStream like /api/ or @logStream like /worker/
@@ -165,6 +180,7 @@ fields @timestamp, @message
 ## 6. Incident Response & Troubleshooting
 
 ### Scenario A: SQS Dead Letter Queue (DLQ) Has Messages
+
 - **Symptom:** CloudWatch alarm on DLQ triggers.
 - **Cause:** Audio file corrupt, ASR failure (ElevenLabs quota exhausted, self-hosted ASR server
   unreachable — check `asr_http_url`), or Bedrock rate limit exceeded after 3 SQS delivery attempts.
@@ -180,6 +196,7 @@ fields @timestamp, @message
      ```
 
 ### Scenario B: Bedrock Rate Limit / Throttling (`ThrottlingException`)
+
 - **Symptom:** Meeting analysis fails with `ThrottlingException` or `RequestTimeout`.
 - **Cause:** Concurrency limit reached on Bedrock Claude in the region.
 - **Procedure:**
@@ -188,29 +205,46 @@ fields @timestamp, @message
   3. Exponential backoff and jitter in `@dawwen/llm` automatically retries up to 3 times before returning to SQS.
 
 ### Scenario C: Credit Ledger Balance Gating (HTTP 402)
+
 - **Symptom:** User reports inability to upload audio or meeting shows `status: FAILED` with "Insufficient credit balance".
 - **Procedure:**
   1. Check user credit balance: `GET /api/billing/balance` (or query `credit_ledgers` table).
-  2. If user paid via offline bank transfer or voucher, execute top-up:
+  2. If user paid via offline bank transfer or voucher, a **platform admin** credits them
+     (ADR-022; regular users get 403). Either use the admin form in Billing → Top up, or:
      ```bash
      curl -X POST https://yourdomain.com/api/billing/topup \
-       -H "Authorization: Bearer <TOKEN>" \
+       -H "Authorization: Bearer <ADMIN_TOKEN>" \
        -H "Content-Type: application/json" \
-       -d '{"amount": 25.00, "reference": "INSTAPAY-123456"}'
+       -d '{"userEmail": "user@example.com", "amountDollars": 25, "reference": "INSTAPAY-123456"}'
      ```
+  3. Granting / revoking the admin flag (run with `DATABASE_URL` pointing at the target DB):
+     ```bash
+     pnpm --filter @dawwen/db admin:grant you@example.com
+     pnpm --filter @dawwen/db admin:grant you@example.com --revoke
+     ```
+
+### Web build modes
+
+- Production/staging builds must **not** set `VITE_DEMO_MODE`; the app then requires login and
+  shows real errors when the API is unreachable.
+- `VITE_DEMO_MODE=true` (used only by the Playwright suite and offline UI demos) serves the
+  built-in sample data and auto-logs in a demo user.
 
 ---
 
 ## 7. Rollback & Disaster Recovery
 
 ### Application Rollback
+
 To rollback to a previous stable container version:
+
 ```bash
 aws ecs update-service --cluster meeting-assistant-dev --service meeting-assistant-dev-api \
   --task-definition meeting-assistant-dev-api:<PREVIOUS_REVISION>
 ```
 
 ### Raw Audio S3 Disaster Recovery
+
 - S3 bucket has KMS encryption and versioning enabled.
 - Hard invariant: Raw audio is purged after transcription. If reprocessing is required before deletion, the original audio remains in S3 during the `audio_retention_days` window (default 7 days).
 - Deleted database records can be restored from point-in-time recovery (PITR) snapshots on the Aurora cluster (35-day backup retention).
