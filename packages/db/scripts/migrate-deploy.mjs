@@ -26,7 +26,11 @@ function databaseUrl() {
     process.exit(2);
   }
   const params = new URLSearchParams({ schema: "public" });
-  if (process.env.NODE_ENV === "production") params.set("sslmode", "require");
+  // DB_SSL=false: Postgres on the same server without TLS (Learner Lab, ADR-026).
+  const ssl = process.env.DB_SSL
+    ? process.env.DB_SSL === "true"
+    : process.env.NODE_ENV === "production";
+  if (ssl) params.set("sslmode", "require");
   return `postgresql://${encodeURIComponent(DB_USER)}:${encodeURIComponent(DB_PASSWORD)}@${DB_HOST}:${DB_PORT}/${encodeURIComponent(DB_NAME)}?${params}`;
 }
 

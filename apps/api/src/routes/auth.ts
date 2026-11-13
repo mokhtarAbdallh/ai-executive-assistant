@@ -39,7 +39,7 @@ export async function authRoutes(
       reply.setCookie("dawwen_refresh_token", tokens.refreshToken, {
         path: "/api/auth",
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
+        secure: secureCookies(),
         sameSite: "strict",
         maxAge: 7 * 24 * 60 * 60, // 7 days
       });
@@ -72,7 +72,7 @@ export async function authRoutes(
       reply.setCookie("dawwen_refresh_token", tokens.refreshToken, {
         path: "/api/auth",
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
+        secure: secureCookies(),
         sameSite: "strict",
         maxAge: 7 * 24 * 60 * 60,
       });
@@ -107,7 +107,7 @@ export async function authRoutes(
       reply.setCookie("dawwen_refresh_token", tokens.refreshToken, {
         path: "/api/auth",
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
+        secure: secureCookies(),
         sameSite: "strict",
         maxAge: 7 * 24 * 60 * 60,
       });
@@ -144,4 +144,9 @@ export async function authRoutes(
     reply.clearCookie("dawwen_access_token", { path: "/" });
     return reply.send({ status: "logged_out" });
   });
+}
+
+/** Secure cookies in production; COOKIE_SECURE=false allows a plain-HTTP test server (ADR-026). */
+function secureCookies(): boolean {
+  return process.env.NODE_ENV === "production" && process.env.COOKIE_SECURE !== "false";
 }

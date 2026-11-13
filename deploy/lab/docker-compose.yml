@@ -1,0 +1,75 @@
+# Dawwen on one AWS Learner Lab EC2 server (ADR-026). Test use only — not production.
+#
+#   Caddy (80/443, free HTTPS on <ip>.sslip.io) ─┬─ /api/* → api:8080
+#                                                └─ /*     → web:3000
+#   api + worker → Postgres (this server) · S3 + SQS (real AWS via LabRole) · Groq · Gemini
+#
+# Run from the repository root: docker compose -f deploy/lab/docker-compose.yml --env-file deploy/lab/.env.lab up -d --build
+name: dawwen-lab
+
+x-app-env: &app-env
+  env_file: .env.lab
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    <<: *app-env
+    image: dawwen-lab-api
+    build: { context: ../.., dockerfile: apps/api/Dockerfile }
+    command: ["node", "packages/db/scripts/migrate-deploy.mjs"]
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    <<: *app-env
+    image: dawwen-lab-api
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  worker:
+    <<: *app-env
+    image: dawwen-lab-worker
+    build: { context: ../.., dockerfile: apps/worker/Dockerfile }
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  web:
+    image: dawwen-lab-web
+    build: { context: ../.., dockerfile: apps/web/Dockerfile }
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [api, web]
+
+volumes:
+  pgdata:
+  caddy_data:

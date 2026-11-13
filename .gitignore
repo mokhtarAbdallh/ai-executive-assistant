@@ -21,6 +21,7 @@ blob-report/
 .env
 .env.*
 !.env.example
+!deploy/lab/.env.lab.example
 *.pem
 *.key
 
