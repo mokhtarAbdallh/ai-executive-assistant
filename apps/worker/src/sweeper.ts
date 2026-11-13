@@ -15,6 +15,37 @@ export interface SweeperOptions {
 
 const STUCK_STATUSES = [MeetingStatus.TRANSCRIBING, MeetingStatus.ANALYZING];
 
+/** A QUEUED meeting older than this never got its audio processed (ADR-025). */
+export const ABANDONED_QUEUED_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Meetings are QUEUED when the upload URL is issued (ADR-025). If the browser never
+ * finishes the upload (tab closed, network), or the SQS message is lost, nothing would
+ * ever move them on. After `queuedAfterMs` they become FAILED with a reason the user can
+ * act on. No credit is held while QUEUED (the hold starts when the worker claims it).
+ */
+export async function sweepAbandonedQueuedMeetings(
+  prisma: PrismaClient,
+  options: { queuedAfterMs?: number; logger?: SweeperOptions["logger"] } = {},
+): Promise<number> {
+  const queuedAfterMs = options.queuedAfterMs ?? ABANDONED_QUEUED_MS;
+  const result = await prisma.meeting.updateMany({
+    where: {
+      status: MeetingStatus.QUEUED,
+      updatedAt: { lt: new Date(Date.now() - queuedAfterMs) },
+    },
+    data: {
+      status: MeetingStatus.FAILED,
+      failureReason:
+        "The recording was never received for processing (upload interrupted or job lost). Upload it again.",
+    },
+  });
+  if (result.count > 0) {
+    options.logger?.warn("marked abandoned QUEUED meetings as FAILED", { count: result.count });
+  }
+  return result.count;
+}
+
 /**
  * Stale-job sweeper (ADR-019): meetings whose worker crashed mid-pipeline would
  * otherwise stay in TRANSCRIBING/ANALYZING forever (SQS gives up after

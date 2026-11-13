@@ -12,7 +12,11 @@ import { createSpeechToText } from "@dawwen/asr";
 import { createLlmClient, createEmbeddingClient } from "@dawwen/llm";
 import { prepareAudioForAsr } from "./audio.js";
 import { SqsAudioConsumer } from "./consumer.js";
-import { dispatchDueReminders, sweepStuckMeetings } from "./sweeper.js";
+import {
+  dispatchDueReminders,
+  sweepStuckMeetings,
+  sweepAbandonedQueuedMeetings,
+} from "./sweeper.js";
 import { SesEmailSender } from "./reminders.js";
 
 function readConfig(): WorkerConfig {
@@ -218,9 +222,11 @@ async function main(): Promise<void> {
         stuckAfterMs: config.stuckMeetingMinutes * 60_000,
         credits: new CreditRepository(prisma),
         logger: log,
-      }).catch((err: unknown) =>
-        log.warn("stuck-meeting sweep failed", { error: (err as Error).message }),
-      );
+      })
+        .then(() => sweepAbandonedQueuedMeetings(prisma, { logger: log }))
+        .catch((err: unknown) =>
+          log.warn("stuck-meeting sweep failed", { error: (err as Error).message }),
+        );
     void sweep(); // once at startup, then on an interval
     housekeepingTimers.push(setInterval(sweep, config.stuckSweepSeconds * 1_000));
   }

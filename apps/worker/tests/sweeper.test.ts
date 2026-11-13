@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   dispatchDueReminders,
   sweepStuckMeetings,
+  sweepAbandonedQueuedMeetings,
+  ABANDONED_QUEUED_MS,
   type ReminderDispatchOptions,
 } from "../src/sweeper.js";
 import { ConsoleEmailSender, type EmailInputLike } from "../src/reminders.js";
@@ -297,5 +299,24 @@ describe("Reminder dispatcher (ADR-020)", () => {
     };
     expect(args.include.user.select.email).toBe(true);
     expect(userId).toBeTruthy();
+  });
+});
+
+describe("Abandoned QUEUED meetings (ADR-025)", () => {
+  it("fails meetings whose upload never arrived, after 6 hours by default", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const count = await sweepAbandonedQueuedMeetings({ meeting: { updateMany } } as never);
+
+    expect(count).toBe(1);
+    const { where, data } = updateMany.mock.calls[0]![0] as {
+      where: { status: string; updatedAt: { lt: Date } };
+      data: { status: string; failureReason: string };
+    };
+    expect(where.status).toBe(MeetingStatus.QUEUED);
+    expect(Date.now() - where.updatedAt.lt.getTime()).toBeGreaterThanOrEqual(
+      ABANDONED_QUEUED_MS - 1000,
+    );
+    expect(data.status).toBe(MeetingStatus.FAILED);
+    expect(data.failureReason).toMatch(/never received/);
   });
 });
