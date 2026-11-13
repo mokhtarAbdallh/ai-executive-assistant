@@ -151,3 +151,17 @@ jobs:
 
       - name: Build Worker Image
         run: docker build -t dawwen-worker:test -f apps/worker/Dockerfile .
+
+      # Building is not enough: start each Node image with no configuration. It must get far
+      # enough to reject the missing env vars; a module-loading error means the bundle or the
+      # runtime install is broken (ADR-028).
+      - name: Smoke Test API and Worker Images
+        run: |
+          for app in api worker; do
+            out=$(timeout 60 docker run --rm dawwen-$app:test 2>&1 || true)
+            echo "== $app"; echo "$out" | tail -15
+            if echo "$out" | grep -qE "Dynamic require|ERR_MODULE_NOT_FOUND|Cannot find (module|package)|ERR_REQUIRE_ESM"; then
+              echo "::error::$app image cannot load its modules"; exit 1
+            fi
+            echo "$out" | grep -q "Invalid configuration" || { echo "::error::$app did not reach config validation"; exit 1; }
+          done
