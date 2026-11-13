@@ -18,7 +18,7 @@ import {
   deleteMeeting,
   fetchHealth,
   fetchMeetingDetail,
-  fetchMeetings,
+  fetchMeetingsPage,
   fetchProposals,
   processDemoMeeting,
 } from "./api";
@@ -83,6 +83,8 @@ function AppContent({
   const [pendingProposalsCount, setPendingProposalsCount] = useState(0);
 
   const [meetings, setMeetings] = useState<MeetingSummary[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [activeMeetingDetail, setActiveMeetingDetail] = useState<MeetingDetailType | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -101,13 +103,32 @@ function AppContent({
     setIsLoading(true);
     setError(null);
     try {
-      setMeetings(await fetchMeetings());
+      const page = await fetchMeetingsPage();
+      setMeetings(page.items);
+      setNextCursor(page.nextCursor);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t("errors.generic"));
     } finally {
       setIsLoading(false);
     }
   }, [t]);
+
+  const loadMoreMeetings = useCallback(async () => {
+    if (!nextCursor) return;
+    setLoadingMore(true);
+    try {
+      const page = await fetchMeetingsPage(nextCursor);
+      setMeetings((current) => {
+        const seen = new Set(current.map((m) => m.id));
+        return [...current, ...page.items.filter((m) => !seen.has(m.id))];
+      });
+      setNextCursor(page.nextCursor);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : t("errors.generic"));
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [nextCursor, t]);
 
   const loadPendingProposals = useCallback(async () => {
     try {
@@ -307,6 +328,9 @@ function AppContent({
             onNewMeetingClick={handleNewMeetingClick}
             onLoadDemoClick={handleLoadDemo}
             onRetry={loadMeetings}
+            hasMore={nextCursor !== null}
+            loadingMore={loadingMore}
+            onLoadMore={() => void loadMoreMeetings()}
             onOpenProposals={() => setView("proposals")}
           />
         )}

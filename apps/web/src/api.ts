@@ -367,21 +367,35 @@ export async function fetchHealth(): Promise<{ status: string; uptimeSeconds?: n
   return { status: IS_DEMO_MODE ? "ok" : "offline" };
 }
 
-export async function fetchMeetings(filter?: {
-  status?: string;
-  search?: string;
-}): Promise<MeetingSummary[]> {
+export interface MeetingsPage {
+  items: MeetingSummary[];
+  /** Pass back as `cursor` to get the next (older) page; null when there is none. */
+  nextCursor: string | null;
+}
+
+export const MEETINGS_PAGE_SIZE = 50;
+
+/** One page of meetings, newest first (ADR-024: keyset pagination via `x-next-cursor`). */
+export async function fetchMeetingsPage(cursor?: string | null): Promise<MeetingsPage> {
   try {
-    const params = new URLSearchParams();
-    if (filter?.status && filter.status !== "ALL") params.set("status", filter.status);
-    if (filter?.search) params.set("search", filter.search);
+    const params = new URLSearchParams({ limit: String(MEETINGS_PAGE_SIZE) });
+    if (cursor) params.set("cursor", cursor);
 
     const res = await authFetch(`/api/meetings?${params.toString()}`);
-    if (res.ok) return res.json();
+    if (res.ok) {
+      return {
+        items: (await res.json()) as MeetingSummary[],
+        nextCursor: res.headers.get("x-next-cursor"),
+      };
+    }
   } catch (err) {
     rethrowUnlessDemo(err);
   }
 
+  return { items: demoMeetingSummaries(), nextCursor: null };
+}
+
+function demoMeetingSummaries(): MeetingSummary[] {
   return DEMO_MEETINGS_STORE.map((m) => ({
     id: m.id,
     title: m.title,

@@ -12,6 +12,30 @@ import { FakeSpeechToText } from "@dawwen/asr";
 import { FakeLlmClient } from "@dawwen/llm";
 import type { DataManagementService } from "../services/data-management.js";
 import type { AudioQueue } from "../services/audio-queue.js";
+import { parseInput } from "../errors.js";
+
+/** Keyset cursor over (createdAt desc, id desc): stable while new meetings arrive. */
+export function encodeMeetingCursor(createdAt: Date, id: string): string {
+  return Buffer.from(`${createdAt.toISOString()}|${id}`).toString("base64url");
+}
+
+function decodeMeetingCursor(cursor: string): { createdAt: Date; id: string } | null {
+  const [iso, id] = Buffer.from(cursor, "base64url").toString("utf8").split("|");
+  const createdAt = new Date(iso ?? "");
+  if (!id || Number.isNaN(createdAt.getTime())) return null;
+  return { createdAt, id };
+}
+
+const ListMeetingsQuerySchema = z.object({
+  status: z.nativeEnum(MeetingStatus).optional(),
+  search: z.string().trim().max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z
+    .string()
+    .max(200)
+    .optional()
+    .refine((c) => c === undefined || decodeMeetingCursor(c) !== null, "Invalid cursor"),
+});
 
 const CreateMeetingSchema = z.object({
   title: z.string().trim().min(1).max(255),
@@ -58,9 +82,16 @@ export async function meetingsRoutes(fastify: FastifyInstance, options: Meetings
   // 1. List meetings
   fastify.get("/meetings", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const user = request.user!;
-    const query = request.query as { status?: MeetingStatus; search?: string };
+    const query = parseInput(ListMeetingsQuerySchema, request.query);
 
     const where: Prisma.MeetingWhereInput = { userId: user.id };
+    const cursor = query.cursor ? decodeMeetingCursor(query.cursor) : null;
+    if (cursor) {
+      where.OR = [
+        { createdAt: { lt: cursor.createdAt } },
+        { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+      ];
+    }
     if (query.status) {
       where.status = query.status;
     }
@@ -70,7 +101,8 @@ export async function meetingsRoutes(fastify: FastifyInstance, options: Meetings
 
     const meetings = await prisma.meeting.findMany({
       where,
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: query.limit + 1,
       include: {
         _count: {
           select: {
@@ -82,7 +114,13 @@ export async function meetingsRoutes(fastify: FastifyInstance, options: Meetings
       },
     });
 
-    return reply.send(meetings);
+    // The body stays a plain array (backwards compatible); the next page is in a header.
+    const page = meetings.slice(0, query.limit);
+    const last = page[page.length - 1];
+    if (meetings.length > query.limit && last) {
+      void reply.header("x-next-cursor", encodeMeetingCursor(last.createdAt, last.id));
+    }
+    return reply.send(page);
   });
 
   // 2. Create meeting
@@ -173,7 +211,10 @@ export async function meetingsRoutes(fastify: FastifyInstance, options: Meetings
       const user = request.user!;
 
       // Verify meeting ownership
-      await meetingRepository.findById({ userId: user.id }, meetingId);
+      // Another tenant's meeting throws CrossTenantAccessViolationError → 404 (ADR-024).
+      if (!(await meetingRepository.findById({ userId: user.id }, meetingId))) {
+        return reply.status(404).send({ error: "Meeting not found" });
+      }
 
       const parsed = UpdateTaskSchema.safeParse(request.body);
       if (!parsed.success) {
@@ -234,7 +275,10 @@ export async function meetingsRoutes(fastify: FastifyInstance, options: Meetings
       const user = request.user!;
 
       // Verify meeting ownership
-      await meetingRepository.findById({ userId: user.id }, meetingId);
+      // Another tenant's meeting throws CrossTenantAccessViolationError → 404 (ADR-024).
+      if (!(await meetingRepository.findById({ userId: user.id }, meetingId))) {
+        return reply.status(404).send({ error: "Meeting not found" });
+      }
 
       const parsed = UpdateDecisionSchema.safeParse(request.body);
       if (!parsed.success) {

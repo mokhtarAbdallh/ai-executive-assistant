@@ -4,6 +4,14 @@ import type { CalendarConnectionRepository, PrismaClient } from "@dawwen/db";
 import type { CalendarProvider } from "../services/calendar.js";
 import type { TokenEncryptor, GoogleOAuthTokens } from "@dawwen/shared";
 import { createOAuthState, verifyOAuthState } from "../services/oauth-state.js";
+import { parseInput } from "../errors.js";
+
+const EventsQuerySchema = z
+  .object({
+    start: z.coerce.date().optional(),
+    end: z.coerce.date().optional(),
+  })
+  .refine((q) => !q.start || !q.end || q.start < q.end, "start must be before end");
 
 interface CalendarRoutesOptions {
   calendarConnectionRepository: CalendarConnectionRepository;
@@ -130,10 +138,10 @@ export async function calendarRoutes(
     { preHandler: [fastify.authenticate] },
     async (request, reply) => {
       const user = request.user!;
-      const query = request.query as { start?: string; end?: string };
+      const query = parseInput(EventsQuerySchema, request.query);
 
-      const timeMin = query.start ? new Date(query.start) : new Date(Date.now() - 30 * 86400000);
-      const timeMax = query.end ? new Date(query.end) : new Date(Date.now() + 60 * 86400000);
+      const timeMin = query.start ?? new Date(Date.now() - 30 * 86400000);
+      const timeMax = query.end ?? new Date(Date.now() + 60 * 86400000);
 
       // A) Fetch from Google Calendar if connected
       const connection = await calendarConnectionRepository.getConnection(

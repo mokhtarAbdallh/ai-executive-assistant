@@ -19,6 +19,7 @@ import {
   CreditRepository,
 } from "@dawwen/db";
 import { loggerOptions } from "./logger.js";
+import { registerErrorHandler } from "./errors.js";
 import { healthRoutes } from "./routes/health.js";
 import { authRoutes } from "./routes/auth.js";
 import { settingsRoutes } from "./routes/settings.js";
@@ -70,6 +71,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
 
   // Money/credit columns are BigInt; JSON has no BigInt, so send them as strings
   // instead of crashing the response (e.g. meetings.creditHoldMicros).
+  // Before any route plugin is registered, so every route inherits it (ADR-024).
+  registerErrorHandler(app);
   app.setReplySerializer((payload) =>
     JSON.stringify(payload, (_key, value: unknown) =>
       typeof value === "bigint" ? value.toString() : value,

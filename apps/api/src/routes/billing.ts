@@ -2,6 +2,16 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { CreditRepository, PrismaClient } from "@dawwen/db";
 import type { PaymentProvider } from "../services/payment.js";
+import { parseInput } from "../errors.js";
+
+const PageQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).max(100_000).default(0),
+});
+
+const UsageQuerySchema = PageQuerySchema.extend({
+  meetingId: z.string().uuid().optional(),
+});
 
 /** Max single top-up: $100,000 — guards against fat-finger admin input. */
 const MAX_TOPUP_MICROS = 100_000n * 1_000_000n;
@@ -57,9 +67,7 @@ export async function billingRoutes(fastify: FastifyInstance, options: BillingRo
     { preHandler: [fastify.authenticate] },
     async (request, reply) => {
       const user = request.user!;
-      const query = request.query as { limit?: string; offset?: string };
-      const limit = query.limit ? parseInt(query.limit, 10) : 50;
-      const offset = query.offset ? parseInt(query.offset, 10) : 0;
+      const { limit, offset } = parseInput(PageQuerySchema, request.query);
 
       const transactions = await creditRepository.listTransactions(
         { userId: user.id },
@@ -79,9 +87,8 @@ export async function billingRoutes(fastify: FastifyInstance, options: BillingRo
   // 3. GET /api/billing/usage
   fastify.get("/billing/usage", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const user = request.user!;
-    const query = request.query as { meetingId?: string; limit?: string; offset?: string };
-    const limit = query.limit ? parseInt(query.limit, 10) : 50;
-    const offset = query.offset ? parseInt(query.offset, 10) : 0;
+    const query = parseInput(UsageQuerySchema, request.query);
+    const { limit, offset } = query;
 
     const [summary, events] = await Promise.all([
       creditRepository.getUsageSummary({ userId: user.id }),

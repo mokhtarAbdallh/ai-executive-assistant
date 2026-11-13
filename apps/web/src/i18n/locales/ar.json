@@ -139,6 +139,7 @@
     "filterApproved": "معتمدة",
     "filterProcessing": "قيد المعالجة",
     "resultCount": "النتايج: {{value}}",
+    "loadMore": "اعرض اجتماعات أقدم",
     "metaTasks": "مهام: {{count}}",
     "metaDecisions": "قرارات: {{count}}",
     "openMeeting": "افتح اجتماع {{title}}",

@@ -139,6 +139,7 @@
     "filterApproved": "Approved",
     "filterProcessing": "Processing",
     "resultCount": "Results: {{value}}",
+    "loadMore": "Show older meetings",
     "metaTasks": "Tasks: {{count}}",
     "metaDecisions": "Decisions: {{count}}",
     "openMeeting": "Open meeting {{title}}",
