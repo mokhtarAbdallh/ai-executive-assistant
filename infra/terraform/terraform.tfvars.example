@@ -44,7 +44,7 @@ pricing_config = jsonencode({
   providerCosts = {
     asrPerAudioMinuteMicros = {
       qwencleo-http = 1200   # ~$0.07 per 60-min meeting on a scale-to-zero g5.xlarge
-      elevenlabs    = 183333 # ~$11/hour of audio
+      elevenlabs    = 183333 # CHECK your ElevenLabs plan: this is ~$11/audio-hour, .env.example uses ~$0.22
       fake          = 0
     }
     llmPerMillionInputTokensMicros  = { bedrock = 3000000, fake = 0 }  # $3 / 1M input
@@ -60,4 +60,10 @@ demo_mode    = false
 public_base_url = "" # e.g. https://app.example.com
 
 # Verified SES identity for reminder emails (optional; console channel when empty).
+# Production: click the SES verification mail, then request leaving the SES sandbox.
 email_from = ""
+
+# ---- Production hardening (ADR-025) ----
+alarm_email        = "" # ops inbox for CloudWatch alarms + budget mails (confirm the SNS mail)
+monthly_budget_usd = 0  # e.g. 300; needs alarm_email
+waf_enabled        = true

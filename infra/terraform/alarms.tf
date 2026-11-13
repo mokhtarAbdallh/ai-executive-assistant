@@ -59,3 +59,63 @@ resource "aws_cloudwatch_metric_alarm" "audio_queue_backlog" {
   alarm_actions = [aws_sns_topic.alarms.arn]
   ok_actions    = []
 }
+
+# ---------- Service health (ADR-025) ----------
+resource "aws_cloudwatch_metric_alarm" "api_5xx" {
+  alarm_name          = "${local.name}-api-5xx"
+  alarm_description   = "The API is returning server errors (HTTP 5xx) — check /ecs/${local.name}/api logs."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "HTTPCode_Target_5XX_Count"
+  namespace           = "AWS/ApplicationELB"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 10
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    LoadBalancer = aws_lb.main.arn_suffix
+    TargetGroup  = aws_lb_target_group.api.arn_suffix
+  }
+
+  alarm_actions = [aws_sns_topic.alarms.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "api_unhealthy" {
+  alarm_name          = "${local.name}-api-unhealthy"
+  alarm_description   = "API tasks are failing the ALB health check (crash loop, DB unreachable, bad deploy)."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "UnHealthyHostCount"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Maximum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    LoadBalancer = aws_lb.main.arn_suffix
+    TargetGroup  = aws_lb_target_group.api.arn_suffix
+  }
+
+  alarm_actions = [aws_sns_topic.alarms.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "db_capacity" {
+  alarm_name          = "${local.name}-db-capacity"
+  alarm_description   = "Aurora is near aurora_max_acu for 15 minutes — raise the max or find the slow query."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "ACUUtilization"
+  namespace           = "AWS/RDS"
+  period              = 300
+  statistic           = "Average"
+  threshold           = 90
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    DBClusterIdentifier = aws_rds_cluster.main.cluster_identifier
+  }
+
+  alarm_actions = [aws_sns_topic.alarms.arn]
+}
