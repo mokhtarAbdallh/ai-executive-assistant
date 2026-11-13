@@ -26,6 +26,8 @@ api + worker → Groq Whisper (speech-to-text) + Gemini (analysis, embeddings): 
 # once per CloudShell: install Terraform into ~/bin (kept between sessions)
 mkdir -p ~/bin && cd ~/bin && curl -sLo tf.zip https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip && unzip -o tf.zip && rm tf.zip
 git clone -b test/learner-lab https://github.com/mokhtarAbdallh/ai-executive-assistant.git ~/dawwen
+# once per account: the Lab blocks Terraform from owning the bucket (see data.tf)
+aws s3 mb s3://dawwen-lab-audio-$(aws sts get-caller-identity --query Account --output text) --region us-east-1
 cd ~/dawwen/infra/terraform-lab
 read -rs TF_VAR_groq_api_key && export TF_VAR_groq_api_key
 read -rs TF_VAR_gemini_api_key && export TF_VAR_gemini_api_key

@@ -36,13 +36,17 @@ resource "aws_db_instance" "main" {
 }
 
 # ---------- Audio bucket ----------
-resource "aws_s3_bucket" "audio" {
-  bucket        = "${var.name}-audio-${data.aws_caller_identity.current.account_id}"
-  force_destroy = true # terraform destroy must work at the end of the day
+# The Lab's SCP denies s3:GetBucketObjectLockConfiguration, which the aws_s3_bucket resource always
+# reads, so Terraform cannot own the bucket. Create it once (CloudShell):
+#   aws s3 mb s3://dawwen-lab-audio-$(aws sts get-caller-identity --query Account --output text)
+# Terraform manages everything else on it. destroy keeps the empty bucket (free); raw audio is
+# deleted by the worker and by the 7-day lifecycle rule below.
+data "aws_s3_bucket" "audio" {
+  bucket = "${var.name}-audio-${data.aws_caller_identity.current.account_id}"
 }
 
 resource "aws_s3_bucket_public_access_block" "audio" {
-  bucket                  = aws_s3_bucket.audio.id
+  bucket                  = data.aws_s3_bucket.audio.id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
@@ -50,7 +54,7 @@ resource "aws_s3_bucket_public_access_block" "audio" {
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "audio" {
-  bucket = aws_s3_bucket.audio.id
+  bucket = data.aws_s3_bucket.audio.id
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
@@ -60,7 +64,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "audio" {
 
 # Browser uploads go straight to S3 with a presigned PUT from the site.
 resource "aws_s3_bucket_cors_configuration" "audio" {
-  bucket = aws_s3_bucket.audio.id
+  bucket = data.aws_s3_bucket.audio.id
   cors_rule {
     allowed_origins = [local.app_url]
     allowed_methods = ["PUT", "GET", "HEAD"]
@@ -72,7 +76,7 @@ resource "aws_s3_bucket_cors_configuration" "audio" {
 
 # Invariant 5 backstop: the worker deletes audio after transcription anyway.
 resource "aws_s3_bucket_lifecycle_configuration" "audio" {
-  bucket = aws_s3_bucket.audio.id
+  bucket = data.aws_s3_bucket.audio.id
   rule {
     id     = "delete-raw-audio"
     status = "Enabled"
@@ -112,7 +116,7 @@ resource "aws_sqs_queue_policy" "audio" {
       Action    = "sqs:SendMessage"
       Resource  = aws_sqs_queue.audio.arn
       Condition = {
-        ArnEquals    = { "aws:SourceArn" = aws_s3_bucket.audio.arn }
+        ArnEquals    = { "aws:SourceArn" = data.aws_s3_bucket.audio.arn }
         StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
       }
     }]
@@ -120,7 +124,7 @@ resource "aws_sqs_queue_policy" "audio" {
 }
 
 resource "aws_s3_bucket_notification" "audio" {
-  bucket = aws_s3_bucket.audio.id
+  bucket = data.aws_s3_bucket.audio.id
   queue {
     queue_arn     = aws_sqs_queue.audio.arn
     events        = ["s3:ObjectCreated:*"]

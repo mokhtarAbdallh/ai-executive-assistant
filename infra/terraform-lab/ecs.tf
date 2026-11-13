@@ -36,7 +36,7 @@ locals {
     DB_PORT             = tostring(aws_db_instance.main.port)
     DB_NAME             = aws_db_instance.main.db_name
     DB_USER             = aws_db_instance.main.username
-    AUDIO_BUCKET        = aws_s3_bucket.audio.bucket
+    AUDIO_BUCKET        = data.aws_s3_bucket.audio.bucket
     AUDIO_QUEUE_URL     = aws_sqs_queue.audio.url
     PUBLIC_BASE_URL     = local.app_url
     CORS_ORIGINS        = local.app_url

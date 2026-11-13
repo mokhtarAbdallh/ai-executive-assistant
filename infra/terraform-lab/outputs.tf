@@ -18,7 +18,7 @@ output "logs_command" {
 }
 
 output "audio_bucket" {
-  value = aws_s3_bucket.audio.bucket
+  value = data.aws_s3_bucket.audio.bucket
 }
 
 output "audio_queue_url" {

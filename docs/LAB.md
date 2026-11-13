@@ -195,6 +195,8 @@ dc exec -T postgres pg_dump -U dawwen dawwen | gzip | aws s3 cp - "s3://$BUCKET/
 # أول مرة بس: نزّل Terraform (بيفضل موجود في CloudShell)
 mkdir -p ~/bin && cd ~/bin && curl -sLo tf.zip https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip && unzip -o tf.zip && rm tf.zip
 git clone -b test/learner-lab https://github.com/mokhtarAbdallh/ai-executive-assistant.git ~/dawwen
+# الـ bucket بيتعمل مرة واحدة بس لكل حساب (الـ Lab مانع Terraform يعمله، ADR-027)
+aws s3 mb s3://dawwen-lab-audio-$(aws sts get-caller-identity --query Account --output text) --region us-east-1
 ```
 
 ```bash
