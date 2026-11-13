@@ -34,7 +34,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "curl -sf http://localhost:4566/_localstack/init/ready | grep -q '\"state\": \"SUCCESSFUL\"'",
+          'curl -sf http://localhost:4566/_localstack/init/ready | grep -q ''"state": "SUCCESSFUL"''',
         ]
       interval: 5s
       timeout: 5s
