@@ -150,7 +150,7 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
 
     const localAuth = new LocalAuthProvider(mockPrisma as unknown as PrismaClient, secret);
 
-    const aliceTokens = await localAuth.issueTokens({
+    const aliceTokens = await localAuth.issueAccessToken({
       id: aliceId,
       email: "alice@dawwen.ai",
       name: "Alice",
@@ -158,7 +158,7 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
     });
     aliceToken = aliceTokens.accessToken;
 
-    const bobTokens = await localAuth.issueTokens({
+    const bobTokens = await localAuth.issueAccessToken({
       id: bobId,
       email: "bob@dawwen.ai",
       name: "Bob",

@@ -136,7 +136,10 @@ export async function authRoutes(
     });
   });
 
-  fastify.post("/auth/logout", async (_request, reply) => {
+  fastify.post("/auth/logout", async (request, reply) => {
+    const parsed = RefreshSchema.safeParse(request.body);
+    const refreshToken = parsed.data?.refreshToken || request.cookies.dawwen_refresh_token;
+    if (refreshToken) await localAuthProvider.revokeRefreshToken(refreshToken);
     reply.clearCookie("dawwen_refresh_token", { path: "/api/auth" });
     reply.clearCookie("dawwen_access_token", { path: "/" });
     return reply.send({ status: "logged_out" });

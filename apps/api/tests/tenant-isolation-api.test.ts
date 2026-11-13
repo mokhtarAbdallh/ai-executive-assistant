@@ -141,7 +141,7 @@ describe("API Tenant Isolation: A user can never read or modify another user's d
       authProvider: localAuthProvider,
     });
 
-    const aliceTokens = await localAuthProvider.issueTokens({
+    const aliceTokens = await localAuthProvider.issueAccessToken({
       id: aliceId,
       email: "alice@example.com",
       name: "Alice",
@@ -149,7 +149,7 @@ describe("API Tenant Isolation: A user can never read or modify another user's d
     });
     aliceToken = aliceTokens.accessToken;
 
-    const bobTokens = await localAuthProvider.issueTokens({
+    const bobTokens = await localAuthProvider.issueAccessToken({
       id: bobId,
       email: "bob@example.com",
       name: "Bob",

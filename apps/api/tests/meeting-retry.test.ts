@@ -51,7 +51,7 @@ describe("POST /api/meetings/:id/retry (ADR-023)", () => {
       audioQueue: { enqueue },
     });
     const token = async (id: string) =>
-      (await auth.issueTokens({ id, email: `${id}@test.local`, name: "T", role: Role.OWNER }))
+      (await auth.issueAccessToken({ id, email: `${id}@test.local`, name: "T", role: Role.OWNER }))
         .accessToken;
     ownerToken = await token(ownerId);
     otherToken = await token(otherId);

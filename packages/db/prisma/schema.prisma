@@ -89,6 +89,7 @@ model User {
   calendarConnections CalendarConnection[]
   usageEvents         UsageEvent[]
   editHistories       EditHistory[]
+  refreshTokens       RefreshToken[]
 
   @@map("users")
 }
@@ -460,4 +461,21 @@ model MeetingEmbedding {
 
   @@index([meetingId])
   @@map("meeting_embeddings")
+}
+
+/// Server-side record of each issued refresh token (ADR-023): rotation on every
+/// refresh, revocation on logout, and reuse detection.
+model RefreshToken {
+  /// The token's `jti` claim.
+  id        String    @id
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  revokedAt DateTime?
+  /// Set when revoked by rotation (jti of the successor); null for logout/revoke-all.
+  replacedBy String?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
 }

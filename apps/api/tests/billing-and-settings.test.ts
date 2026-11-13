@@ -362,7 +362,7 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
     } as unknown as PrismaClient;
 
     const auth = new LocalAuthProvider(mockPrisma, secret);
-    const aliceTokens = await auth.issueTokens({
+    const aliceTokens = await auth.issueAccessToken({
       id: aliceId,
       email: "alice@example.com",
       name: "Alice Founder",
@@ -370,7 +370,7 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
     });
     aliceToken = aliceTokens.accessToken;
 
-    const bobTokens = await auth.issueTokens({
+    const bobTokens = await auth.issueAccessToken({
       id: bobId,
       email: "bob@example.com",
       name: "Bob Client",
@@ -379,7 +379,12 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
     bobToken = bobTokens.accessToken;
 
     adminToken = (
-      await auth.issueTokens({ id: adminId, email: "ops@dawwen.ai", name: "Ops", role: Role.OWNER })
+      await auth.issueAccessToken({
+        id: adminId,
+        email: "ops@dawwen.ai",
+        name: "Ops",
+        role: Role.OWNER,
+      })
     ).accessToken;
 
     const creditRepo = new CreditRepository(mockPrisma);

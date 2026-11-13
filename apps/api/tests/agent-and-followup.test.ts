@@ -289,7 +289,7 @@ describe("Phase 5: Follow-up & Ask Chat Agent Invariants", () => {
   beforeAll(async () => {
     fakeCalendar = new FakeCalendarProvider();
     const localAuth = new LocalAuthProvider(mockPrisma as unknown as PrismaClient, secret);
-    const tokens = await localAuth.issueTokens({
+    const tokens = await localAuth.issueAccessToken({
       id: aliceId,
       email: "alice@dawwen.ai",
       name: "Alice",
