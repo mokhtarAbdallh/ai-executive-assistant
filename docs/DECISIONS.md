@@ -397,3 +397,10 @@ WHEN_REQUIRED`; otherwise the SDK signs a CRC32 of an empty body and S3 rejects 
 - **Cost:** ~$0.12/h and the Lab does not stop ECS/RDS/ALB at session end, so the guide says to
   `terraform destroy` daily (`running=false` keeps data but still costs). The EC2 path (ADR-026)
   stays the cheaper option.
+- **Addendum (first real apply):** the Lab SCP denies `s3:GetBucketObjectLockConfiguration`, which
+  the AWS provider's `aws_s3_bucket` always reads, so the bucket is created once with `aws s3 mb`
+  and read as a data source; its CORS/encryption/lifecycle/notification stay in Terraform and
+  `destroy` leaves the empty bucket. The same run exposed a real image bug: tsup bundled CommonJS
+  deps of `@dawwen/*` (AWS SDK, Prisma) into the ESM output, so api and worker crashed on start
+  ("Dynamic require ... is not supported"). Fix: all npm imports external + `--shamefully-hoist`
+  install in the runner; the Lab image workflow now smoke-runs each image. `main` has the same bug.

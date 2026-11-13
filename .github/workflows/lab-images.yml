@@ -44,7 +44,30 @@ jobs:
         id: img
         run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/dawwen-${{ matrix.app }}" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/build-push-action@v6
+      - name: Build (local, for the smoke test)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/${{ matrix.app }}/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: smoke:${{ matrix.app }}
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+
+      # Start the Node apps with no configuration: they must get far enough to reject the missing
+      # env vars. A module-loading failure means the bundle or the runtime install is broken.
+      - name: Smoke test (modules load)
+        if: matrix.app != 'web'
+        run: |
+          out=$(timeout 60 docker run --rm smoke:${{ matrix.app }} 2>&1 || true)
+          echo "$out" | tail -20
+          if echo "$out" | grep -qE "Dynamic require|ERR_MODULE_NOT_FOUND|Cannot find (module|package)|ERR_REQUIRE_ESM"; then
+            echo "::error::${{ matrix.app }} image cannot load its modules"; exit 1
+          fi
+
+      - name: Push
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: apps/${{ matrix.app }}/Dockerfile
