@@ -61,6 +61,9 @@ test("login, upload, processing, review and approval end to end", async ({ page 
   // The AI only proposed the follow-up meeting; it runs after the user approves it (Invariant 1).
   await page.locator('[data-nav="proposals"]:visible').click();
   await expect(page.getByRole("heading", { name: "صندوق المقترحات" })).toBeVisible();
-  await page.getByRole("button", { name: /موافقة و(جدولة|تنفيذ)/ }).first().click();
+  await page
+    .getByRole("button", { name: /موافقة و(جدولة|تنفيذ)/ })
+    .first()
+    .click();
   await expect(page.getByText("تم تنفيذ المقترح").first()).toBeVisible({ timeout: 15_000 });
 });

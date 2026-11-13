@@ -30,10 +30,14 @@ function databaseUrl() {
   return `postgresql://${encodeURIComponent(DB_USER)}:${encodeURIComponent(DB_PASSWORD)}@${DB_HOST}:${DB_PORT}/${encodeURIComponent(DB_NAME)}?${params}`;
 }
 
-const result = spawnSync("npx", ["--no-install", "prisma", "migrate", "deploy", "--schema", schema], {
-  stdio: "inherit",
-  env: { ...process.env, DATABASE_URL: databaseUrl() },
-  cwd: resolve(here, ".."),
-  shell: process.platform === "win32",
-});
+const result = spawnSync(
+  "npx",
+  ["--no-install", "prisma", "migrate", "deploy", "--schema", schema],
+  {
+    stdio: "inherit",
+    env: { ...process.env, DATABASE_URL: databaseUrl() },
+    cwd: resolve(here, ".."),
+    shell: process.platform === "win32",
+  },
+);
 process.exit(result.status ?? 1);

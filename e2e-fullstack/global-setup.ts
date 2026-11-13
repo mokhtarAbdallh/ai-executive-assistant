@@ -37,12 +37,16 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   });
   if (migrate.status !== 0) throw new Error("migrations failed (is `docker compose up` running?)");
 
-  const worker: ChildProcess = spawn("pnpm", ["--filter", "@dawwen/worker", "exec", "tsx", "--conditions=source", "src/main.ts"], {
-    cwd: root,
-    env: { ...process.env, ...STACK_ENV },
-    stdio: "ignore",
-    shell: process.platform === "win32",
-  });
+  const worker: ChildProcess = spawn(
+    "pnpm",
+    ["--filter", "@dawwen/worker", "exec", "tsx", "--conditions=source", "src/main.ts"],
+    {
+      cwd: root,
+      env: { ...process.env, ...STACK_ENV },
+      stdio: "ignore",
+      shell: process.platform === "win32",
+    },
+  );
 
   const stamp = Date.now();
   const password = randomBytes(12).toString("hex");
@@ -50,12 +54,16 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   const adminEmail = `e2e-admin-${stamp}@test.local`;
   await api("/auth/register", { email, password, name: "مستخدم الاختبار" });
   await api("/auth/register", { email: adminEmail, password, name: "E2E admin" });
-  const grant = spawnSync("pnpm", ["--silent", "--filter", "@dawwen/db", "admin:grant", adminEmail], {
-    cwd: root,
-    env: { ...process.env, DATABASE_URL },
-    stdio: "inherit",
-    shell: process.platform === "win32",
-  });
+  const grant = spawnSync(
+    "pnpm",
+    ["--silent", "--filter", "@dawwen/db", "admin:grant", adminEmail],
+    {
+      cwd: root,
+      env: { ...process.env, DATABASE_URL },
+      stdio: "inherit",
+      shell: process.platform === "win32",
+    },
+  );
   if (grant.status !== 0) throw new Error("admin:grant failed");
   const admin = await api("/auth/login", { email: adminEmail, password });
   await api("/billing/topup", { userEmail: email, amountDollars: 5 }, admin.accessToken as string);
