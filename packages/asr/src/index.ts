@@ -1,6 +1,7 @@
 export * from "./types.js";
 export * from "./post-processor.js";
 export * from "./chunking.js";
+export * from "./metrics.js";
 export * from "./adapters/fake.js";
 export * from "./adapters/elevenlabs.js";
 export * from "./adapters/qwencleo.js";

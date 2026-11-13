@@ -9,6 +9,9 @@ coverage/
 *.tsbuildinfo
 .vite/
 
+# ASR bake-off output contains meeting transcripts (Invariant 5)
+bakeoff-results/
+
 # Playwright
 playwright-report/
 test-results/

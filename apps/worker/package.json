@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --conditions=source src/main.ts",
+    "bakeoff": "tsx --conditions=source scripts/bakeoff.ts",
     "build": "tsup",
     "start": "node dist/main.js",
     "typecheck": "tsc -p tsconfig.json",
