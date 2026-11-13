@@ -326,3 +326,33 @@ visual language in both themes and both languages.
   tools back a rule-based fallback for dev/demo.
 - Deferred: a balance gate for chat tokens, metering of query embeddings in search, speaker
   diarization for the self-hosted ASR.
+
+## ADR-025: Phase-4 operations — runnable locally, deployable on ECS, measurable before pricing
+
+- **Database URL on ECS:** Terraform injects `DB_*` parts, not `DATABASE_URL`. API and worker pass
+  `config.databaseUrl` to `getPrismaClient(datasourceUrl)`; nothing creates a client at import time.
+  Migrations run as a one-off ECS task (`terraform output migrate_command`, script
+  `packages/db/scripts/migrate-deploy.mjs`, `sslmode=require` in prod, URL never printed).
+- **Presigned uploads:** S3 clients use `requestChecksumCalculation/responseChecksumValidation =
+  WHEN_REQUIRED`; otherwise the SDK signs a CRC32 of an empty body and S3 rejects browser PUTs.
+- **Local stack:** compose ports are overridable (`DAWWEN_PG_PORT`, `DAWWEN_LOCALSTACK_PORT`);
+  the LocalStack init script is idempotent (bucket, CORS, queue + DLQ, S3→SQS on `uploads/`).
+- **Full-stack e2e:** `pnpm test:e2e:fullstack` drives login → upload with consent → processing →
+  approve all → approve a proposal against the real API, worker, Postgres and LocalStack (fake
+  ASR/LLM). It runs in CI as job `e2e`.
+- **Lost uploads:** meetings left `QUEUED` for 6 hours (upload interrupted, job lost) are marked
+  `FAILED` with an "upload it again" reason by the worker sweep.
+- **ASR bake-off:** `pnpm --filter @dawwen/worker bakeoff --dir <recordings>` runs each provider
+  through the production audio path and reports pooled WER/CER (after normalising Arabic spelling
+  variants, digits, punctuation), real-time factor and cost per audio hour. The report contains
+  transcripts and is git-ignored (`bakeoff-results/`). The ASR decision is made from it.
+- **Cost per minute:** `pnpm --filter @dawwen/worker cost-report --fixed-usd <bill>` divides metered
+  cost (usage_events) plus fixed AWS cost by billed audio minutes and shows revenue and margin.
+  `.env.example` Bedrock prices were 1000× too low and now match Terraform. The ElevenLabs price
+  differs between Terraform (183 333 µ$/min) and `.env.example` (3 667 µ$/min); the owner must set
+  the real plan price before go-live.
+- **Production Terraform:** WAF on the ALB (rate limit per IP + AWS common / bad-inputs /
+  IP-reputation rules; body-size rule counts only), SES identity + `ses:SendEmail` for the worker
+  when `email_from` is set (it had no permission before), alarms for API 5xx, unhealthy API
+  targets and Aurora capacity, optional monthly AWS budget. Backups were already 14 days with
+  deletion protection in prod. Go-live steps are in RUNBOOK §8.

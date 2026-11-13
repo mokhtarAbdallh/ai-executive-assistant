@@ -96,6 +96,7 @@ Every change to Dawwen is guarded by automated invariant tests:
 Start PostgreSQL (with `pgvector`) and LocalStack (S3 + SQS):
 ```bash
 docker compose up -d
+# Port 5432 or 4566 taken? DAWWEN_PG_PORT=55433 DAWWEN_LOCALSTACK_PORT=4567 docker compose up -d
 ```
 
 ### 3. Install Dependencies
@@ -133,8 +134,11 @@ pnpm run typecheck
 # 3. Unit & Integration Test Suite (108+ tests)
 pnpm test
 
-# 4. Playwright End-to-End Test Suite
+# 4. Playwright End-to-End Test Suite (web, demo mode)
 pnpm run test:e2e
+
+# 5. Full product path against the real API + worker (needs docker compose up)
+pnpm run test:e2e:fullstack
 ```
 
 ---

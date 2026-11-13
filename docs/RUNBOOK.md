@@ -89,19 +89,17 @@ Prisma migrations must be applied before routing traffic to new API or worker re
 
 ### Migration Execution Procedure
 
-Run a one-off ECS Fargate task or run via an administrative bastion / CI pipeline:
+Run it as a one-off ECS task with the API image (it builds the URL from the `DB_*` secrets
+and never prints it). Terraform prints the exact command:
 
 ```bash
-# 1. Connect to Aurora PostgreSQL via VPC bastion or AWS Systems Manager Session
-export DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=require"
-
-# 2. Deploy migrations
-pnpm --filter @dawwen/db exec prisma migrate deploy
-
-# 3. Verify pgvector extension and indexes
-psql "$DATABASE_URL" -c "SELECT * FROM pg_extension WHERE extname = 'vector';"
-psql "$DATABASE_URL" -c "\d meeting_embeddings;"
+cd infra/terraform
+eval "$(terraform output -raw migrate_command)"   # aws ecs run-task ... migrate-deploy.mjs
+# Wait for the task to stop with exit code 0 (ECS console → Tasks → Stopped), then deploy.
 ```
+
+For ad-hoc SQL (pgvector checks, the cost report), open an SSM port-forward to Aurora from a
+task with ECS Exec enabled and point `DATABASE_URL` at `127.0.0.1`.
 
 ---
 
@@ -169,10 +167,17 @@ Actual alarms created by `infra/terraform/alarms.tf` (SNS topic `${project}-${en
 2. **Audio queue backlog (`${project}-${environment}-audio-queue-backlog`):**
    `ApproximateNumberOfMessagesVisible > 50` for 30 minutes — workers under-provisioned or ASR
    too slow; scale out (max 5 tasks) or check the ASR endpoint.
-3. **ECS Memory/CPU Utilization:**
-   - Worker task CPU `> 85%` for 5 consecutive minutes → trigger auto-scaling scale-out up to `worker_max = 5`.
-4. **ALB 5XX Errors:**
-   - Alarm if `HTTPCode_Target_5XX_Count > 10` in 5 minutes.
+3. **API 5xx (`…-api-5xx`):** `HTTPCode_Target_5XX_Count > 10` per 5 min, twice — read
+   `/ecs/<name>/api` logs by `reqId`.
+4. **API unhealthy (`…-api-unhealthy`):** any unhealthy API target for 3 minutes — crash loop,
+   database unreachable, or a bad deploy (roll back, section 7).
+5. **Database capacity (`…-db-capacity`):** Aurora `ACUUtilization > 90%` for 15 minutes — raise
+   `aurora_max_acu` or find the slow query (Performance Insights).
+6. **Monthly budget:** set `monthly_budget_usd` (with `alarm_email`) for AWS Budgets mails at 80%
+   actual / 100% forecast.
+
+Worker auto-scaling (about 2 visible SQS messages per task, up to `worker_max`) is a scaling
+policy, not an alarm.
 
 ### Structured Log Analysis in CloudWatch Logs Insights
 
@@ -265,4 +270,41 @@ aws ecs update-service --cluster meeting-assistant-dev --service meeting-assista
 
 - S3 bucket has KMS encryption and versioning enabled.
 - Hard invariant: Raw audio is purged after transcription. If reprocessing is required before deletion, the original audio remains in S3 during the `audio_retention_days` window (default 7 days).
-- Deleted database records can be restored from point-in-time recovery (PITR) snapshots on the Aurora cluster (35-day backup retention).
+- Deleted database records can be restored from point-in-time recovery (PITR) snapshots on the Aurora cluster (14-day backup retention in prod, 3 days elsewhere; deletion protection and a
+  final snapshot in prod).
+
+---
+
+## 8. Production Go-Live Checklist (ADR-025)
+
+Do these in order; tick each one. Nothing here is done by code alone.
+
+**Decisions**
+- [ ] AWS region chosen (Bedrock model available there, close to Egypt: `eu-central-1` or `me-central-1`).
+- [ ] ASR provider chosen from the bake-off (`pnpm --filter @dawwen/worker bakeoff --dir <recordings>`
+      on 20–30 real Egyptian meetings with human transcripts; compare WER, names/English terms by hand, cost).
+- [ ] Payment method for credits (manual top-up codes via the admin endpoint first).
+
+**Infrastructure** (`environment = "prod"` in tfvars)
+- [ ] `certificate_arn` set (HTTPS only), `cors_origins` = the real web origin, `public_base_url` set.
+- [ ] `single_nat_gateway = false`, `api_desired_count >= 2` for availability.
+- [ ] `pricing_config` holds **your real provider prices** (check the ElevenLabs price per minute
+      on your plan; the Terraform default and the example disagree).
+- [ ] `alarm_email` set and the SNS subscription confirmed from the inbox; `monthly_budget_usd` set.
+- [ ] `waf_enabled = true` (default). After a week, check WAF sampled requests for false positives.
+- [ ] `email_from` set; click the SES verification link; request SES production access
+      (account leaves the sandbox) — until then reminders reach verified addresses only.
+- [ ] Secrets filled in Secrets Manager (`app-secret`, ASR/Google keys) — never in tfvars or git.
+
+**Data safety**
+- [ ] Aurora: 14-day backups, deletion protection and final snapshot are automatic in prod —
+      do one test restore of a snapshot into a new cluster before launch.
+- [ ] `audio_retention_days` agreed (privacy policy says the same number).
+
+**Release**
+- [ ] `terraform plan` reviewed, `apply` run by a human.
+- [ ] Images pushed, migrations run (section 3), services healthy (section 4).
+- [ ] Smoke test on prod: register → upload a short recording with consent → review → approve a
+      proposal. (`pnpm test:e2e:fullstack` covers the same path locally.)
+- [ ] Cost check after the first real week: `pnpm --filter @dawwen/worker cost-report --fixed-usd
+      <AWS bill excl. Bedrock>` → set the customer price per minute with a margin you accept.
