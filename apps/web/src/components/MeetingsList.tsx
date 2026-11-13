@@ -41,6 +41,10 @@ interface MeetingsListProps {
   onRetry: () => void;
   onOpenProposals?: () => void;
   demoLoading?: boolean;
+  /** More (older) meetings exist on the server (ADR-024 pagination). */
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
 }
 
 function matchesFilter(meeting: MeetingSummary, filter: StatusFilter): boolean {
@@ -63,6 +67,9 @@ export function MeetingsList({
   onRetry,
   onOpenProposals,
   demoLoading = false,
+  hasMore = false,
+  loadingMore = false,
+  onLoadMore,
 }: MeetingsListProps) {
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
@@ -333,6 +340,13 @@ export function MeetingsList({
               );
             })}
           </ul>
+        )}
+        {hasMore && onLoadMore && !isLoading && !error && (
+          <div className="flex justify-center border-t border-line p-3">
+            <Button variant="ghost" size="sm" onClick={onLoadMore} loading={loadingMore}>
+              {t("meetings.loadMore")}
+            </Button>
+          </div>
         )}
       </Card>
 

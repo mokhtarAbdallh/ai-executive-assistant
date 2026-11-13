@@ -14,6 +14,7 @@ import {
   Mail,
   MessageSquare,
   Pencil,
+  RotateCcw,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -21,7 +22,13 @@ import {
   X,
 } from "lucide-react";
 import type { Decision, MeetingDetail as MeetingDetailType, Task } from "../types";
-import { approveAllMeetingItems, deleteMeeting, updateDecision, updateMeeting } from "../api";
+import {
+  approveAllMeetingItems,
+  deleteMeeting,
+  retryMeetingProcessing,
+  updateDecision,
+  updateMeeting,
+} from "../api";
 import { clockFromSeconds, formatDate } from "../lib/format";
 import { Avatar } from "./Avatar";
 import { AskChat } from "./AskChat";
@@ -36,6 +43,7 @@ import {
   Card,
   ConfirmDialog,
   IconButton,
+  InlineAlert,
   Input,
   ProgressBar,
   Tabs,
@@ -71,6 +79,7 @@ export function MeetingDetail({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [focusSegmentId, setFocusSegmentId] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
 
   useEffect(() => {
     setMeeting(initialMeeting);
@@ -128,6 +137,19 @@ export function MeetingDetail({
       toast({ title: t("errors.generic"), tone: "error" });
     } finally {
       setApprovingAll(false);
+    }
+  };
+
+  const handleRetry = async () => {
+    setRetrying(true);
+    try {
+      await retryMeetingProcessing(meeting.id);
+      sync({ ...meeting, status: "QUEUED", failureReason: null });
+      toast({ title: t("meeting.processing.retryQueued"), tone: "success" });
+    } catch {
+      toast({ title: t("errors.generic"), tone: "error" });
+    } finally {
+      setRetrying(false);
     }
   };
 
@@ -317,6 +339,36 @@ export function MeetingDetail({
           </div>
         </div>
       </header>
+
+      {meeting.status === "FAILED" ? (
+        <InlineAlert
+          tone="danger"
+          title={t("meeting.processing.failedTitle")}
+          action={
+            meeting.audioDeletedAt ? null : (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={handleRetry}
+                disabled={retrying}
+                icon={<RotateCcw className="h-3.5 w-3.5" />}
+              >
+                {retrying ? t("meeting.processing.retrying") : t("meeting.processing.retry")}
+              </Button>
+            )
+          }
+        >
+          <p>{t("meeting.processing.failedBody")}</p>
+          {meeting.failureReason ? (
+            <p className="mt-1 font-mono text-[11px]" dir="auto">
+              {meeting.failureReason}
+            </p>
+          ) : null}
+          {meeting.audioDeletedAt ? (
+            <p className="mt-1">{t("meeting.processing.audioGone")}</p>
+          ) : null}
+        </InlineAlert>
+      ) : null}
 
       <Tabs
         tabs={tabs}

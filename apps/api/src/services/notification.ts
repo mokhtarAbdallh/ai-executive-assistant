@@ -19,11 +19,14 @@ export interface NotificationResult {
 }
 
 export interface NotificationProvider {
+  /** True when nothing is actually delivered (console channel). */
+  readonly simulated?: boolean;
   sendEmail(input: SendEmailInput): Promise<NotificationResult>;
   sendReminder(input: SendReminderInput): Promise<NotificationResult>;
 }
 
 export class ConsoleNotificationProvider implements NotificationProvider {
+  readonly simulated = true;
   async sendEmail(input: SendEmailInput): Promise<NotificationResult> {
     const messageId = `email-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     // Console log for demo/local environment as per ADR-010

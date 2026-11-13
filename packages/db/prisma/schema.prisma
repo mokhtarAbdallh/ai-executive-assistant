@@ -40,6 +40,8 @@ enum TaskStatus {
 enum ProposalStatus {
   PENDING_APPROVAL
   APPROVED
+  /// Claimed by exactly one executor; side effect in flight (ADR-022).
+  EXECUTING
   EXECUTED
   REJECTED
   FAILED
@@ -71,6 +73,8 @@ model User {
   passwordHash        String?
   name                String
   role                Role                 @default(OWNER)
+  /// Platform operator (not a team role): may credit other users' ledgers (ADR-022).
+  isPlatformAdmin     Boolean              @default(false)
   avatarUrl           String?
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
@@ -85,6 +89,7 @@ model User {
   calendarConnections CalendarConnection[]
   usageEvents         UsageEvent[]
   editHistories       EditHistory[]
+  refreshTokens       RefreshToken[]
 
   @@map("users")
 }
@@ -95,7 +100,7 @@ model UserSettings {
   user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   language           String   @default("ar")
   timezone           String   @default("Africa/Cairo")
-  audioRetentionDays Int      @default(7)
+  audioRetentionDays Int      @default(0)
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
@@ -136,6 +141,8 @@ model Meeting {
   audioDurationSeconds Int?
   audioDeletedAt       DateTime?
   failureReason        String?
+  /// Credit currently held for this meeting's processing (ADR-023); 0 when none.
+  creditHoldMicros     BigInt              @default(0)
   createdAt            DateTime            @default(now())
   updatedAt            DateTime            @updatedAt
 
@@ -412,7 +419,7 @@ model UsageEvent {
   userId        String
   user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   meetingId     String?
-  meeting       Meeting? @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  meeting       Meeting? @relation(fields: [meetingId], references: [id], onDelete: SetNull)
   operationType String
   quantity      Float
   unit          String
@@ -454,4 +461,21 @@ model MeetingEmbedding {
 
   @@index([meetingId])
   @@map("meeting_embeddings")
+}
+
+/// Server-side record of each issued refresh token (ADR-023): rotation on every
+/// refresh, revocation on logout, and reuse detection.
+model RefreshToken {
+  /// The token's `jti` claim.
+  id        String    @id
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  revokedAt DateTime?
+  /// Set when revoked by rotation (jti of the successor); null for logout/revoke-all.
+  replacedBy String?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
 }

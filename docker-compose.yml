@@ -7,7 +7,8 @@ services:
       POSTGRES_USER: dawwen
       POSTGRES_PASSWORD: dawwen_dev_pw
     ports:
-      - "5432:5432"
+      # Override when 5432 is taken: DAWWEN_PG_PORT=55433 docker compose up -d (and DB_PORT in .env)
+      - "${DAWWEN_PG_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -20,7 +21,7 @@ services:
     image: localstack/localstack:3.8
     container_name: dawwen-localstack
     ports:
-      - "4566:4566"
+      - "${DAWWEN_LOCALSTACK_PORT:-4566}:4566"
     environment:
       - SERVICES=s3,sqs
       - AWS_DEFAULT_REGION=eu-central-1
@@ -29,10 +30,16 @@ services:
       - "./scripts/init-localstack.sh:/etc/localstack/init/ready.d/init-aws.sh"
       - "/var/run/docker.sock:/var/run/docker.sock"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      # Healthy only after the ready-hook created the bucket, queues and S3 notification.
+      test:
+        [
+          "CMD-SHELL",
+          'curl -sf http://localhost:4566/_localstack/init/ready | grep -q ''"state": "SUCCESSFUL"''',
+        ]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 30
+      start_period: 30s
 
 volumes:
   postgres-data:

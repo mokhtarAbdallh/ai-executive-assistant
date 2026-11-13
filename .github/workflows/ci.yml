@@ -10,6 +10,21 @@ jobs:
   verify:
     name: Lint, Typecheck & Tests
     runs-on: ubuntu-latest
+    services:
+      # Real Postgres for the concurrency invariant tests (ADR-022): races cannot be mocked.
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: dawwen
+          POSTGRES_PASSWORD: dawwen
+          POSTGRES_DB: dawwen_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dawwen -d dawwen_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://dawwen:dawwen@localhost:5432/dawwen_test
     steps:
       - uses: actions/checkout@v4
 
@@ -39,14 +54,68 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile || pnpm install
 
+      - name: Generate Prisma client
+        run: pnpm --filter @dawwen/db exec prisma generate
+
       - name: Lint
         run: pnpm lint
 
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Apply migrations to the test database
+        run: pnpm --filter @dawwen/db exec prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+
       - name: Unit & Invariant Tests
         run: pnpm test
+
+  e2e:
+    name: End-to-end (demo UI + full stack)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 22 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm --filter @dawwen/db exec prisma generate
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      # Postgres + LocalStack (S3, SQS, S3→SQS notification) exactly like local development.
+      - name: Start local stack
+        run: docker compose up -d --wait
+
+      - name: Demo UI suite
+        run: pnpm test:e2e
+
+      # Real API + worker + web, fake ASR/LLM: login → upload → processing → review → approve (ADR-025).
+      - name: Full-stack suite
+        run: pnpm test:e2e:fullstack
+
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: |
+            test-results/
+            !test-results/fullstack-user.json
+          retention-days: 7
 
   terraform:
     name: Terraform Format & Validate

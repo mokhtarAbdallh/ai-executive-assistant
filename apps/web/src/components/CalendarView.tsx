@@ -103,6 +103,21 @@ export function CalendarView({
     void load();
   }, [load]);
 
+  // Result of the Google OAuth round trip (GET /api/calendar/callback, ADR-023).
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get("calendar");
+    if (!result) return;
+    toast(
+      result === "connected"
+        ? { title: t("calendar.connected"), tone: "success" }
+        : { title: t("calendar.connectFailed"), tone: "error" },
+    );
+    params.delete("calendar");
+    const query = params.toString();
+    window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+  }, [t, toast]);
+
   useEffect(() => {
     const api = calendarRef.current?.getApi();
     if (!api || view === "list") return;

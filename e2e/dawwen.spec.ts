@@ -1,7 +1,8 @@
 import { test, expect } from "@playwright/test";
 
 /**
- * These tests run against the Vite dev server with no API behind it, so every
+ * These tests run against the Vite dev server in demo mode (VITE_DEMO_MODE=true,
+ * started by playwright.config.ts) with no API behind it, so every
  * screen renders from the demo fallbacks in `src/api.ts`. That keeps the tests
  * deterministic while still exercising the real UI, i18n and human-in-the-loop
  * flows.
@@ -97,16 +98,21 @@ test.describe("Dawwen (دوّن) E2E", () => {
     await expect(page.getByText("تم تنفيذ المقترح")).toBeVisible();
   });
 
-  test("billing top-up uses an accessible dialog", async ({ page }) => {
+  test("a regular user cannot self top-up: the dialog only explains the transfer", async ({
+    page,
+  }) => {
     await page.locator('[data-nav="billing"]:visible').click();
     await page.getByRole("button", { name: "شحن الرصيد" }).click();
 
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole("heading", { name: "شحن الرصيد" })).toBeVisible();
-    await expect(dialog.getByRole("button", { name: /\$25/ })).toBeVisible();
+    await expect(dialog.getByRole("heading", { name: "إزاي تشحن رصيد" })).toBeVisible();
+    await expect(dialog).toContainText("InstaPay");
+    // No amount picker or confirm button for non-admins (ADR-022).
+    await expect(dialog.getByRole("button", { name: /\$25/ })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "تأكيد الشحن" })).toHaveCount(0);
 
-    await dialog.getByRole("button", { name: "إلغاء" }).click();
+    await dialog.getByRole("button", { name: "إغلاق" }).last().click();
     await expect(dialog).not.toBeVisible();
   });
 

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { CalendarDays, Check, Inbox, MapPin, Users, X } from "lucide-react";
 import type { Proposal } from "../../types";
 import { approveProposal, rejectProposal } from "../../api";
+import { proposalErrorKey } from "../../lib/proposal-errors";
 import { formatDateTime } from "../../lib/format";
 import { ProposalActionBadge, ProposalStatusBadge } from "../StatusBadges";
 import { Button, Card, CardBody, EmptyState, ReasonDialog, useToast } from "../ui";
@@ -33,8 +34,8 @@ export function ProposalsTab({ proposals, onProposalsChange }: ProposalsTabProps
         status: (result.proposal?.status ?? "APPROVED") as Proposal["status"],
       });
       toast({ title: t("proposals.approvedToast"), tone: "success" });
-    } catch {
-      toast({ title: t("errors.generic"), tone: "error" });
+    } catch (err) {
+      toast({ title: t(proposalErrorKey(err)), tone: "error" });
     } finally {
       setBusyId(null);
     }

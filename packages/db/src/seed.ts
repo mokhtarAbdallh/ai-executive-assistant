@@ -1,6 +1,7 @@
-import { prisma } from "./client.js";
+import { getPrismaClient } from "./client.js";
 import { scryptSync, randomBytes } from "node:crypto";
 import { CreditTransactionType, Role } from "@prisma/client";
+
 
 export function hashPassword(password: string): string {
   const salt = randomBytes(16).toString("hex");
@@ -12,7 +13,7 @@ export async function seedDemoUser() {
   const demoEmail = "demo@dawwen.ai";
   const passwordHash = hashPassword("DawwenDemo2026!");
 
-  const user = await prisma.user.upsert({
+  const user = await getPrismaClient().user.upsert({
     where: { email: demoEmail },
     create: {
       email: demoEmail,
@@ -23,7 +24,7 @@ export async function seedDemoUser() {
         create: {
           language: "ar",
           timezone: "Africa/Cairo",
-          audioRetentionDays: 7,
+          audioRetentionDays: 0,
         },
       },
       creditLedger: {
@@ -37,12 +38,12 @@ export async function seedDemoUser() {
   });
 
   // Record initial topup transaction if none exists
-  const txCount = await prisma.creditTransaction.count({
+  const txCount = await getPrismaClient().creditTransaction.count({
     where: { userId: user.id },
   });
 
   if (txCount === 0) {
-    await prisma.creditTransaction.create({
+    await getPrismaClient().creditTransaction.create({
       data: {
         userId: user.id,
         amountMicros: 10_000_000n,

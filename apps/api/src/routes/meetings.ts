@@ -1,10 +1,41 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { PrismaClient, MeetingRepository, TaskRepository, DecisionRepository, Prisma } from "@dawwen/db";
-import { MeetingStatus, Priority } from "@dawwen/db";
+import type {
+  PrismaClient,
+  MeetingRepository,
+  TaskRepository,
+  DecisionRepository,
+  Prisma,
+} from "@dawwen/db";
+import { CrossTenantAccessViolationError, MeetingStatus, Priority } from "@dawwen/db";
 import { FakeSpeechToText } from "@dawwen/asr";
 import { FakeLlmClient } from "@dawwen/llm";
 import type { DataManagementService } from "../services/data-management.js";
+import type { AudioQueue } from "../services/audio-queue.js";
+import { parseInput } from "../errors.js";
+
+/** Keyset cursor over (createdAt desc, id desc): stable while new meetings arrive. */
+export function encodeMeetingCursor(createdAt: Date, id: string): string {
+  return Buffer.from(`${createdAt.toISOString()}|${id}`).toString("base64url");
+}
+
+function decodeMeetingCursor(cursor: string): { createdAt: Date; id: string } | null {
+  const [iso, id] = Buffer.from(cursor, "base64url").toString("utf8").split("|");
+  const createdAt = new Date(iso ?? "");
+  if (!id || Number.isNaN(createdAt.getTime())) return null;
+  return { createdAt, id };
+}
+
+const ListMeetingsQuerySchema = z.object({
+  status: z.nativeEnum(MeetingStatus).optional(),
+  search: z.string().trim().max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z
+    .string()
+    .max(200)
+    .optional()
+    .refine((c) => c === undefined || decodeMeetingCursor(c) !== null, "Invalid cursor"),
+});
 
 const CreateMeetingSchema = z.object({
   title: z.string().trim().min(1).max(255),
@@ -38,120 +69,116 @@ export interface MeetingsRoutesOptions {
   decisionRepository: DecisionRepository;
   prisma: PrismaClient;
   dataManagementService?: DataManagementService;
+  /** Re-queues failed meetings (ADR-023). Without it, retry answers 503. */
+  audioQueue?: AudioQueue;
+  bucketName?: string;
 }
 
-export async function meetingsRoutes(
-  fastify: FastifyInstance,
-  options: MeetingsRoutesOptions,
-) {
+const MeetingIdParamsSchema = z.object({ id: z.string().min(1) });
+
+export async function meetingsRoutes(fastify: FastifyInstance, options: MeetingsRoutesOptions) {
   const { meetingRepository, prisma } = options;
 
   // 1. List meetings
-  fastify.get(
-    "/meetings",
-    { preHandler: [fastify.authenticate] },
-    async (request, reply) => {
-      const user = request.user!;
-      const query = request.query as { status?: MeetingStatus; search?: string };
+  fastify.get("/meetings", { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    const user = request.user!;
+    const query = parseInput(ListMeetingsQuerySchema, request.query);
 
-      const where: Prisma.MeetingWhereInput = { userId: user.id };
-      if (query.status) {
-        where.status = query.status;
-      }
-      if (query.search) {
-        where.title = { contains: query.search, mode: "insensitive" };
-      }
+    const where: Prisma.MeetingWhereInput = { userId: user.id };
+    const cursor = query.cursor ? decodeMeetingCursor(query.cursor) : null;
+    if (cursor) {
+      where.OR = [
+        { createdAt: { lt: cursor.createdAt } },
+        { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+      ];
+    }
+    if (query.status) {
+      where.status = query.status;
+    }
+    if (query.search) {
+      where.title = { contains: query.search, mode: "insensitive" };
+    }
 
-      const meetings = await prisma.meeting.findMany({
-        where,
-        orderBy: { createdAt: "desc" },
-        include: {
-          _count: {
-            select: {
-              tasks: true,
-              decisions: true,
-              transcriptSegments: true,
-            },
+    const meetings = await prisma.meeting.findMany({
+      where,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: query.limit + 1,
+      include: {
+        _count: {
+          select: {
+            tasks: true,
+            decisions: true,
+            transcriptSegments: true,
           },
         },
-      });
+      },
+    });
 
-      return reply.send(meetings);
-    },
-  );
+    // The body stays a plain array (backwards compatible); the next page is in a header.
+    const page = meetings.slice(0, query.limit);
+    const last = page[page.length - 1];
+    if (meetings.length > query.limit && last) {
+      void reply.header("x-next-cursor", encodeMeetingCursor(last.createdAt, last.id));
+    }
+    return reply.send(page);
+  });
 
   // 2. Create meeting
-  fastify.post(
-    "/meetings",
-    { preHandler: [fastify.authenticate] },
-    async (request, reply) => {
-      const parsed = CreateMeetingSchema.safeParse(request.body);
-      if (!parsed.success) {
-        return reply.status(400).send({
-          error: "Validation failed",
-          details: parsed.error.format(),
-        });
-      }
+  fastify.post("/meetings", { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    const parsed = CreateMeetingSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: "Validation failed",
+        details: parsed.error.format(),
+      });
+    }
 
-      const user = request.user!;
-      const meeting = await meetingRepository.create(
-        { userId: user.id },
-        {
-          title: parsed.data.title,
-          language: parsed.data.language,
-          scheduledStart: parsed.data.scheduledStart
-            ? new Date(parsed.data.scheduledStart)
-            : new Date(),
-          status: MeetingStatus.UPLOADED,
-        },
-      );
+    const user = request.user!;
+    const meeting = await meetingRepository.create(
+      { userId: user.id },
+      {
+        title: parsed.data.title,
+        language: parsed.data.language,
+        scheduledStart: parsed.data.scheduledStart
+          ? new Date(parsed.data.scheduledStart)
+          : new Date(),
+        status: MeetingStatus.UPLOADED,
+      },
+    );
 
-      return reply.status(201).send(meeting);
-    },
-  );
+    return reply.status(201).send(meeting);
+  });
 
   // 3. Get meeting details
-  fastify.get(
-    "/meetings/:id",
-    { preHandler: [fastify.authenticate] },
-    async (request, reply) => {
-      const { id } = request.params as { id: string };
-      const user = request.user!;
+  fastify.get("/meetings/:id", { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const user = request.user!;
 
-      const meeting = await meetingRepository.findWithDetails({ userId: user.id }, id);
-      if (!meeting) {
-        return reply.status(404).send({ error: "Meeting not found" });
-      }
+    const meeting = await meetingRepository.findWithDetails({ userId: user.id }, id);
+    if (!meeting) {
+      return reply.status(404).send({ error: "Meeting not found" });
+    }
 
-      return reply.send(meeting);
-    },
-  );
+    return reply.send(meeting);
+  });
 
   // 4. Update meeting
-  fastify.patch(
-    "/meetings/:id",
-    { preHandler: [fastify.authenticate] },
-    async (request, reply) => {
-      const { id } = request.params as { id: string };
-      const user = request.user!;
+  fastify.patch("/meetings/:id", { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const user = request.user!;
 
-      const parsed = UpdateMeetingSchema.safeParse(request.body);
-      if (!parsed.success) {
-        return reply.status(400).send({
-          error: "Validation failed",
-          details: parsed.error.format(),
-        });
-      }
+    const parsed = UpdateMeetingSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: "Validation failed",
+        details: parsed.error.format(),
+      });
+    }
 
-      const updated = await meetingRepository.update(
-        { userId: user.id },
-        id,
-        parsed.data,
-      );
+    const updated = await meetingRepository.update({ userId: user.id }, id, parsed.data);
 
-      return reply.send(updated);
-    },
-  );
+    return reply.send(updated);
+  });
 
   // 5. Delete meeting (Real data deletion: DB rows, embeddings, and S3 audio)
   fastify.delete(
@@ -166,10 +193,7 @@ export async function meetingsRoutes(
       }
 
       if (options.dataManagementService) {
-        const result = await options.dataManagementService.deleteMeeting(
-          { userId: user.id },
-          id,
-        );
+        const result = await options.dataManagementService.deleteMeeting({ userId: user.id }, id);
         return reply.send(result);
       } else {
         await meetingRepository.delete({ userId: user.id }, id);
@@ -187,7 +211,10 @@ export async function meetingsRoutes(
       const user = request.user!;
 
       // Verify meeting ownership
-      await meetingRepository.findById({ userId: user.id }, meetingId);
+      // Another tenant's meeting throws CrossTenantAccessViolationError → 404 (ADR-024).
+      if (!(await meetingRepository.findById({ userId: user.id }, meetingId))) {
+        return reply.status(404).send({ error: "Meeting not found" });
+      }
 
       const parsed = UpdateTaskSchema.safeParse(request.body);
       if (!parsed.success) {
@@ -226,7 +253,9 @@ export async function meetingsRoutes(
             : {}),
           ...(parsed.data.priority ? { priority: parsed.data.priority as Priority } : {}),
           ...(parsed.data.approved !== undefined ? { approved: parsed.data.approved } : {}),
-          ...(parsed.data.needsReview !== undefined ? { needsReview: parsed.data.needsReview } : {}),
+          ...(parsed.data.needsReview !== undefined
+            ? { needsReview: parsed.data.needsReview }
+            : {}),
         },
       });
 
@@ -246,7 +275,10 @@ export async function meetingsRoutes(
       const user = request.user!;
 
       // Verify meeting ownership
-      await meetingRepository.findById({ userId: user.id }, meetingId);
+      // Another tenant's meeting throws CrossTenantAccessViolationError → 404 (ADR-024).
+      if (!(await meetingRepository.findById({ userId: user.id }, meetingId))) {
+        return reply.status(404).send({ error: "Meeting not found" });
+      }
 
       const parsed = UpdateDecisionSchema.safeParse(request.body);
       if (!parsed.success) {
@@ -280,11 +312,82 @@ export async function meetingsRoutes(
         data: {
           ...(parsed.data.text !== undefined ? { text: parsed.data.text } : {}),
           ...(parsed.data.approved !== undefined ? { approved: parsed.data.approved } : {}),
-          ...(parsed.data.needsReview !== undefined ? { needsReview: parsed.data.needsReview } : {}),
+          ...(parsed.data.needsReview !== undefined
+            ? { needsReview: parsed.data.needsReview }
+            : {}),
         },
       });
 
       return reply.send(updated);
+    },
+  );
+
+  // Retry a FAILED meeting: back to QUEUED and onto the processing queue (ADR-023).
+  // The worker starts from a clean slate, so a retry never duplicates results.
+  fastify.post(
+    "/meetings/:id/retry",
+    { preHandler: [fastify.authenticate] },
+    async (request, reply) => {
+      const params = MeetingIdParamsSchema.safeParse(request.params);
+      if (!params.success) return reply.status(400).send({ error: "Validation failed" });
+      const user = request.user!;
+      const meetingId = params.data.id;
+
+      let meeting;
+      try {
+        meeting = await meetingRepository.findById({ userId: user.id }, meetingId);
+      } catch (err) {
+        if (err instanceof CrossTenantAccessViolationError) meeting = null;
+        else throw err;
+      }
+      if (!meeting) return reply.status(404).send({ error: "Meeting not found" });
+
+      if (!options.audioQueue) {
+        return reply
+          .status(503)
+          .send({ error: "queue_unavailable", message: "Processing queue is not configured" });
+      }
+      if (meeting.status !== MeetingStatus.FAILED) {
+        return reply
+          .status(409)
+          .send({ error: "not_failed", message: "Only failed meetings can be retried" });
+      }
+      if (!meeting.audioS3Key || meeting.audioDeletedAt) {
+        return reply.status(409).send({
+          error: "audio_unavailable",
+          message: "The original audio is no longer stored; upload it again",
+        });
+      }
+
+      const claimed = await prisma.meeting.updateMany({
+        where: { id: meetingId, userId: user.id, status: MeetingStatus.FAILED },
+        data: { status: MeetingStatus.QUEUED, failureReason: null },
+      });
+      if (claimed.count === 0) {
+        return reply
+          .status(409)
+          .send({ error: "not_failed", message: "Only failed meetings can be retried" });
+      }
+
+      try {
+        await options.audioQueue.enqueue({
+          meetingId,
+          userId: user.id,
+          s3Bucket: options.bucketName || process.env.AUDIO_BUCKET || "meeting-assistant-audio",
+          s3Key: meeting.audioS3Key,
+        });
+      } catch (err) {
+        request.log.error({ meetingId, err: (err as Error).message }, "retry enqueue failed");
+        await prisma.meeting.updateMany({
+          where: { id: meetingId, status: MeetingStatus.QUEUED },
+          data: { status: MeetingStatus.FAILED, failureReason: "Could not queue the retry" },
+        });
+        return reply
+          .status(503)
+          .send({ error: "queue_unavailable", message: "Could not queue the retry" });
+      }
+
+      return reply.status(202).send({ id: meetingId, status: MeetingStatus.QUEUED });
     },
   );
 
@@ -301,189 +404,187 @@ export async function meetingsRoutes(
     },
   );
 
-  // 9. Offline Demo Trigger: immediate in-memory processing with Fake ASR & Fake LLM
-  fastify.post(
-    "/meetings/:id/process-demo",
-    { preHandler: [fastify.authenticate] },
-    async (request, reply) => {
-      const { id: meetingId } = request.params as { id: string };
-      const user = request.user!;
+  // 9. Offline Demo Trigger: immediate in-memory processing with Fake ASR & Fake LLM.
+  // Registered ONLY outside production (or explicitly in DEMO_MODE) so a real
+  // deployment never exposes mock processing (ADR-018).
+  if (process.env.NODE_ENV !== "production" || process.env.DEMO_MODE === "true") {
+    fastify.post(
+      "/meetings/:id/process-demo",
+      { preHandler: [fastify.authenticate] },
+      async (request, reply) => {
+        const { id: meetingId } = request.params as { id: string };
+        const user = request.user!;
 
-      const meeting = await meetingRepository.findById({ userId: user.id }, meetingId);
-      if (!meeting) {
-        return reply.status(404).send({ error: "Meeting not found" });
-      }
+        const meeting = await meetingRepository.findById({ userId: user.id }, meetingId);
+        if (!meeting) {
+          return reply.status(404).send({ error: "Meeting not found" });
+        }
 
-      // Ensure consent exists for demo run
-      let consent = await prisma.recordingConsent.findFirst({
-        where: { meetingId, userId: user.id },
-      });
-      if (!consent) {
-        consent = await prisma.recordingConsent.create({
-          data: {
-            userId: user.id,
+        // Ensure consent exists for demo run
+        let consent = await prisma.recordingConsent.findFirst({
+          where: { meetingId, userId: user.id },
+        });
+        if (!consent) {
+          consent = await prisma.recordingConsent.create({
+            data: {
+              userId: user.id,
+              meetingId,
+              participantName: user.name || "Demo User",
+              consentMethod: "demo_auto",
+            },
+          });
+        }
+
+        // ASR Transcription
+        const asr = new FakeSpeechToText();
+        const asrResult = await asr.transcribe(Buffer.from("demo-audio"));
+
+        // Clean existing segments if any
+        await prisma.transcriptSegment.deleteMany({ where: { meetingId } });
+
+        const savedSegments = [];
+        for (const seg of asrResult.segments) {
+          const created = await prisma.transcriptSegment.create({
+            data: {
+              meetingId,
+              speakerLabel: seg.speakerLabel,
+              startMs: seg.startMs,
+              endMs: seg.endMs,
+              text: seg.text,
+              confidence: seg.confidence ?? 0.95,
+              language: asrResult.language,
+            },
+          });
+          savedSegments.push(created);
+        }
+
+        // LLM Analysis
+        const llm = new FakeLlmClient();
+        const llmResult = await llm.analyzeMeeting({
+          meetingTitle: meeting.title,
+          scheduledStart: meeting.scheduledStart ?? new Date(),
+          language: "ar",
+          segments: savedSegments.map((s) => ({
+            id: s.id,
+            speakerLabel: s.speakerLabel || "Speaker",
+            text: s.text,
+            startMs: s.startMs,
+            endMs: s.endMs,
+          })),
+        });
+
+        const analysis = llmResult.analysis;
+
+        // Persist analysis
+        await prisma.meetingAnalysis.upsert({
+          where: { meetingId },
+          update: {
+            tldr: analysis.tldr,
+            purpose: analysis.purpose,
+            rawJson: analysis as unknown as Prisma.InputJsonValue,
+            modelName: llmResult.modelName,
+            status: "ready",
+          },
+          create: {
             meetingId,
-            participantName: user.name || "Demo User",
-            consentMethod: "demo_auto",
+            tldr: analysis.tldr,
+            purpose: analysis.purpose,
+            rawJson: analysis as unknown as Prisma.InputJsonValue,
+            modelName: llmResult.modelName,
+            status: "ready",
           },
         });
-      }
 
-      // ASR Transcription
-      const asr = new FakeSpeechToText();
-      const asrResult = await asr.transcribe(Buffer.from("demo-audio"));
+        // Clear & create topics, decisions, tasks, open questions
+        await prisma.topicDiscussion.deleteMany({ where: { meetingId } });
+        await prisma.decision.deleteMany({ where: { meetingId } });
+        await prisma.task.deleteMany({ where: { meetingId } });
+        await prisma.agendaItem.deleteMany({ where: { meetingId } });
+        await prisma.openQuestion.deleteMany({ where: { meetingId } });
+        await prisma.proposal.deleteMany({ where: { meetingId } });
 
-      // Clean existing segments if any
-      await prisma.transcriptSegment.deleteMany({ where: { meetingId } });
+        for (let i = 0; i < analysis.agenda.length; i++) {
+          await prisma.agendaItem.create({
+            data: { meetingId, title: analysis.agenda[i]!, orderIndex: i },
+          });
+        }
 
-      const savedSegments = [];
-      for (const seg of asrResult.segments) {
-        const created = await prisma.transcriptSegment.create({
+        for (let i = 0; i < analysis.topics.length; i++) {
+          const t = analysis.topics[i]!;
+          await prisma.topicDiscussion.create({
+            data: {
+              meetingId,
+              title: t.title,
+              summary: t.summary,
+              sourceTs: t.sourceTs,
+              sourceSegmentIds: t.sourceSegmentIds,
+              orderIndex: i,
+            },
+          });
+        }
+
+        for (const d of analysis.decisions) {
+          await prisma.decision.create({
+            data: {
+              meetingId,
+              text: d.text,
+              sourceTs: d.sourceTs,
+              sourceSegmentIds: d.sourceSegmentIds,
+              needsReview: d.needsReview,
+              approved: false,
+            },
+          });
+        }
+
+        for (const item of analysis.actionItems) {
+          await prisma.task.create({
+            data: {
+              meetingId,
+              title: item.task,
+              ownerName: item.owner || null,
+              dueDate: item.due ? new Date(item.due) : null,
+              priority: item.priority ? (item.priority.toUpperCase() as Priority) : Priority.MEDIUM,
+              sourceTs: item.sourceTs,
+              sourceSegmentIds: item.sourceSegmentIds,
+              needsReview: item.needsReview,
+              approved: false,
+            },
+          });
+        }
+
+        for (const q of analysis.openQuestions) {
+          await prisma.openQuestion.create({
+            data: { meetingId, question: q },
+          });
+        }
+
+        // Next meeting proposal (Invariant 1)
+        if (analysis.nextMeeting) {
+          await prisma.proposal.create({
+            data: {
+              userId: user.id,
+              meetingId,
+              actionType: "SCHEDULE_MEETING",
+              payload: analysis.nextMeeting as unknown as Prisma.InputJsonValue,
+              status: "PENDING_APPROVAL",
+              reason: "Follow-up meeting proposed by AI",
+            },
+          });
+        }
+
+        // Update status to REVIEW_PENDING
+        const finalMeeting = await prisma.meeting.update({
+          where: { id: meetingId },
           data: {
-            meetingId,
-            speakerLabel: seg.speakerLabel,
-            startMs: seg.startMs,
-            endMs: seg.endMs,
-            text: seg.text,
-            confidence: seg.confidence ?? 0.95,
-            language: asrResult.language,
+            status: MeetingStatus.REVIEW_PENDING,
+            audioDurationSeconds: asrResult.durationSeconds,
+            actualEnd: new Date(),
           },
         });
-        savedSegments.push(created);
-      }
 
-      // LLM Analysis
-      const llm = new FakeLlmClient();
-      const llmResult = await llm.analyzeMeeting({
-        meetingTitle: meeting.title,
-        scheduledStart: meeting.scheduledStart ?? new Date(),
-        language: "ar",
-        segments: savedSegments.map((s) => ({
-          id: s.id,
-          speakerLabel: s.speakerLabel || "Speaker",
-          text: s.text,
-          startMs: s.startMs,
-          endMs: s.endMs,
-        })),
-      });
-
-      const analysis = llmResult.analysis;
-
-      // Persist analysis
-      await prisma.meetingAnalysis.upsert({
-        where: { meetingId },
-        update: {
-          tldr: analysis.tldr,
-          purpose: analysis.purpose,
-          rawJson: analysis as unknown as Prisma.InputJsonValue,
-          modelName: llmResult.modelName,
-          status: "ready",
-        },
-        create: {
-          meetingId,
-          tldr: analysis.tldr,
-          purpose: analysis.purpose,
-          rawJson: analysis as unknown as Prisma.InputJsonValue,
-          modelName: llmResult.modelName,
-          status: "ready",
-        },
-      });
-
-      // Clear & create topics, decisions, tasks, open questions
-      await prisma.topicDiscussion.deleteMany({ where: { meetingId } });
-      await prisma.decision.deleteMany({ where: { meetingId } });
-      await prisma.task.deleteMany({ where: { meetingId } });
-      await prisma.agendaItem.deleteMany({ where: { meetingId } });
-      await prisma.openQuestion.deleteMany({ where: { meetingId } });
-      await prisma.proposal.deleteMany({ where: { meetingId } });
-
-      for (let i = 0; i < analysis.agenda.length; i++) {
-        await prisma.agendaItem.create({
-          data: { meetingId, title: analysis.agenda[i]!, orderIndex: i },
-        });
-      }
-
-      for (let i = 0; i < analysis.topics.length; i++) {
-        const t = analysis.topics[i]!;
-        await prisma.topicDiscussion.create({
-          data: {
-            meetingId,
-            title: t.title,
-            summary: t.summary,
-            sourceTs: t.sourceTs,
-            sourceSegmentIds: t.sourceSegmentIds,
-            orderIndex: i,
-          },
-        });
-      }
-
-      for (const d of analysis.decisions) {
-        await prisma.decision.create({
-          data: {
-            meetingId,
-            text: d.text,
-            sourceTs: d.sourceTs,
-            sourceSegmentIds: d.sourceSegmentIds,
-            needsReview: d.needsReview,
-            approved: false,
-          },
-        });
-      }
-
-      for (const item of analysis.actionItems) {
-        await prisma.task.create({
-          data: {
-            meetingId,
-            title: item.task,
-            ownerName: item.owner || null,
-            dueDate: item.due ? new Date(item.due) : null,
-            priority: item.priority ? (item.priority.toUpperCase() as Priority) : Priority.MEDIUM,
-            sourceTs: item.sourceTs,
-            sourceSegmentIds: item.sourceSegmentIds,
-            needsReview: item.needsReview,
-            approved: false,
-          },
-        });
-      }
-
-      for (const q of analysis.openQuestions) {
-        await prisma.openQuestion.create({
-          data: { meetingId, question: q },
-        });
-      }
-
-      // Next meeting proposal (Invariant 1)
-      if (analysis.nextMeeting) {
-        await prisma.proposal.create({
-          data: {
-            userId: user.id,
-            meetingId,
-            actionType: "SCHEDULE_MEETING",
-            payload: analysis.nextMeeting as unknown as Prisma.InputJsonValue,
-            status: "PENDING_APPROVAL",
-            reason: "Follow-up meeting proposed by AI",
-          },
-        });
-      }
-
-      // Update status to REVIEW_PENDING
-      const finalMeeting = await prisma.meeting.update({
-        where: { id: meetingId },
-        data: {
-          status: MeetingStatus.REVIEW_PENDING,
-          audioDurationSeconds: asrResult.durationSeconds,
-          actualEnd: new Date(),
-        },
-      });
-
-      const fullDetails = await meetingRepository.findWithDetails(
-        { userId: user.id },
-        meetingId,
-      );
-      return reply.send(fullDetails || finalMeeting);
-    },
-  );
+        const fullDetails = await meetingRepository.findWithDetails({ userId: user.id }, meetingId);
+        return reply.send(fullDetails || finalMeeting);
+      },
+    );
+  }
 }
-
-
-

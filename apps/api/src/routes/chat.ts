@@ -4,15 +4,16 @@ import type { AgentService } from "../services/agent.js";
 import type { TenantContext, Role } from "@dawwen/db";
 
 const ChatQuerySchema = z.object({
-  query: z.string().min(1),
-  meetingId: z.string().optional(),
+  query: z.string().trim().min(1).max(2000),
+  meetingId: z.string().max(64).optional(),
   conversationHistory: z
     .array(
       z.object({
         role: z.enum(["user", "assistant"]),
-        content: z.string(),
+        content: z.string().max(8000),
       }),
     )
+    .max(50)
     .optional(),
 });
 
@@ -41,19 +42,9 @@ export const chatRoutes: FastifyPluginAsync<{
         });
       }
 
-      try {
-        const response = await agentService.processQuery(
-          tenantContext,
-          parseResult.data,
-        );
-        return reply.code(200).send(response);
-      } catch (err) {
-        request.log.error(err, "Agent query failed");
-        return reply.code(500).send({
-          error: "agent_error",
-          message: err instanceof Error ? err.message : "Internal chat error",
-        });
-      }
+      // Errors go to the global handler (404 for another user's meeting, generic 500).
+      const response = await agentService.processQuery(tenantContext, parseResult.data);
+      return reply.code(200).send(response);
     },
   );
 };

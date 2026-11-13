@@ -84,7 +84,8 @@
     "APPROVED": "تمت الموافقة",
     "EXECUTED": "تم التنفيذ",
     "REJECTED": "مرفوض",
-    "FAILED": "فشل"
+    "FAILED": "فشل",
+    "EXECUTING": "بيتنفّذ"
   },
   "proposalAction": {
     "SCHEDULE_MEETING": "جدولة اجتماع",
@@ -138,6 +139,7 @@
     "filterApproved": "معتمدة",
     "filterProcessing": "قيد المعالجة",
     "resultCount": "النتايج: {{value}}",
+    "loadMore": "اعرض اجتماعات أقدم",
     "metaTasks": "مهام: {{count}}",
     "metaDecisions": "قرارات: {{count}}",
     "openMeeting": "افتح اجتماع {{title}}",
@@ -172,6 +174,8 @@
     "recordingActive": "جاري التسجيل…",
     "startRecording": "ابدأ التسجيل",
     "stopRecording": "إيقاف التسجيل",
+    "recordedReady": "التسجيل جاهز ({{seconds}}). اضغط إدخال المعالجة.",
+    "processingFailed": "المعالجة وقعت. اتأكد من جودة الصوت وحاول تاني. لو اتفق معاك على مدة أطول جرب تاني بعد شوية.",
     "dropzoneText": "اسحب ملف الصوت هنا أو اضغط للاختيار",
     "supportedFormats": "MP3, WAV, M4A, WEBM, OGG",
     "fileSize": "الحجم: {{size}} ميجابايت",
@@ -273,6 +277,14 @@
       "hint": "المقترحات دي مش هتتنفذ غير لما توافق عليها من صندوق المقترحات.",
       "emptyTitle": "مفيش مقترحات للاجتماع ده",
       "emptyBody": "لما تطلب من دوّن جدولة اجتماع أو إرسال رسالة، المقترح هيظهر هنا."
+    },
+    "processing": {
+      "failedTitle": "المعالجة وقفت",
+      "failedBody": "حصلت مشكلة وإحنا بنفرّغ أو بنحلل الاجتماع. رصيدك ما اتخصمش منه حاجة.",
+      "retry": "حاول تاني",
+      "retrying": "بنبدأ تاني…",
+      "retryQueued": "رجّعنا الاجتماع للطابور، هيتعالج كمان شوية",
+      "audioGone": "الصوت الأصلي اتمسح، فمحتاج ترفع التسجيل تاني."
     }
   },
   "calendar": {
@@ -313,7 +325,8 @@
       "summarized": "تم تلخيصه",
       "processing": "قيد المعالجة",
       "needs_review": "محتاج مراجعة"
-    }
+    },
+    "connectFailed": "ماقدرناش نربط التقويم. جرّب تاني."
   },
   "proposals": {
     "title": "صندوق المقترحات",
@@ -337,7 +350,14 @@
     "rejectedToast": "تم رفض المقترح",
     "reject": "رفض",
     "rejectTitle": "ترفض المقترح؟",
-    "rejectHint": "اكتب سبب مختصر (اختياري) — مش هيتم تنفيذ أي حاجة."
+    "rejectHint": "اكتب سبب مختصر (اختياري) — مش هيتم تنفيذ أي حاجة.",
+    "errors": {
+      "proposal_incomplete": "المقترح ناقصه بيانات (زي الميعاد أو الإيميل)، فمش هننفذه بتخمين. ارفضه أو اطلب واحد أوضح.",
+      "calendar_not_connected": "اربط Google Calendar الأول من صفحة التقويم، وبعدين وافق على الحجز.",
+      "email_not_configured": "إرسال الإيميلات لسه مش متفعّل على السيرفر.",
+      "conflict": "المقترح ده اتنفّذ أو اتقفل قبل كده.",
+      "execution_failed": "التنفيذ فشل، ومحصلش أي حاجة. جرّب تاني كمان شوية."
+    }
   },
   "ask": {
     "title": "اسأل دوّن",
@@ -416,6 +436,8 @@
     "operation": {
       "AUDIO_TRANSCRIPTION": "تفريغ صوتي",
       "LLM_ANALYSIS": "تحليل بالذكاء الاصطناعي",
+      "LLM_CHAT": "أسئلة المساعد",
+      "EMBEDDING_GENERATION": "توليد embeddings",
       "EMBEDDINGS": "توليد embeddings",
       "EMBEDDING": "توليد embeddings"
     },
@@ -424,7 +446,12 @@
       "tokens": "توكن",
       "embeddings": "embedding",
       "count": "مرة"
-    }
+    },
+    "topupAdminOnlyTitle": "إزاي تشحن رصيد",
+    "topupAdminOnlyBody": "حوّل المبلغ (InstaPay أو تحويل بنكي) وابعت لنا رقم التحويل والإيميل بتاع حسابك. الرصيد بيتضاف بعد ما نراجع التحويل، ومفيش أي خصم أوتوماتيك.",
+    "adminTopupTitle": "إضافة رصيد لمستخدم (أدمن)",
+    "adminUserEmail": "إيميل المستخدم",
+    "adminForbidden": "إضافة الرصيد للأدمن بس."
   },
   "settings": {
     "title": "الإعدادات",
@@ -514,5 +541,28 @@
       "CANCELLED": "ملغي"
     },
     "footerNote": "كل إجراء متابعة محتاج موافقة صريحة قبل التنفيذ."
+  },
+  "auth": {
+    "tagline": "محاضر اجتماعاتك بالعربي المصري والإنجليزي، والقرار دايمًا في إيدك.",
+    "loginTitle": "سجّل دخولك",
+    "loginSubtitle": "أهلًا بيك تاني في دوّن.",
+    "registerTitle": "اعمل حساب جديد",
+    "registerSubtitle": "دقيقة واحدة وتبدأ تسجّل اجتماعاتك.",
+    "name": "الاسم",
+    "namePlaceholder": "اسمك زي ما يظهر في المحاضر",
+    "email": "الإيميل",
+    "password": "الباسورد",
+    "passwordHint": "8 حروف على الأقل.",
+    "loginBtn": "دخول",
+    "registerBtn": "اعمل الحساب",
+    "toRegister": "معندكش حساب؟ اعمل واحد",
+    "toLogin": "عندك حساب؟ سجّل دخول",
+    "invalidCredentials": "الإيميل أو الباسورد مش صح.",
+    "emailTaken": "الإيميل ده عليه حساب بالفعل. جرّب تسجّل دخول.",
+    "invalidInput": "راجع البيانات: الإيميل لازم يبقى صحيح والباسورد 8 حروف على الأقل.",
+    "offline": "مش قادرين نوصل للسيرفر دلوقتي. اتأكد من النت وجرّب تاني.",
+    "loading": "بنجهّز حسابك…",
+    "logout": "تسجيل خروج",
+    "sessionExpired": "الجلسة خلصت. سجّل دخولك تاني."
   }
 }

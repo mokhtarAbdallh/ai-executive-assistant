@@ -40,9 +40,10 @@ resource "aws_rds_cluster_instance" "writer" {
 # ---------- Application secrets (containers only; values are set outside Terraform) ----------
 locals {
   secret_names = {
-    asr_api_key  = "asr-api-key"      # transcription provider key
-    google_oauth = "google-oauth"     # JSON: {"client_id": "...", "client_secret": "..."}
-    app_secret   = "app-secret"       # JWT / session signing key
+    asr_api_key      = "asr-api-key"      # transcription provider key (SaaS ASR)
+    asr_http_api_key = "asr-http-api-key" # optional shared key for self-hosted ASR (ADR-018)
+    google_oauth     = "google-oauth"     # JSON: {"client_id": "...", "client_secret": "..."}
+    app_secret       = "app-secret"       # JWT / session signing key
   }
 }
 

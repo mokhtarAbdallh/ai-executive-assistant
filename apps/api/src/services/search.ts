@@ -1,5 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import type { TenantContext } from "@dawwen/db";
+import { searchMeetingEmbeddings, type VectorSearchResultRow } from "@dawwen/db";
+import type { EmbeddingClient } from "@dawwen/llm";
 
 export interface SearchCitation {
   meetingId: string;
@@ -27,7 +29,36 @@ export function formatTimestamp(ms: number): string {
 }
 
 export class SearchService {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly embeddingClient?: EmbeddingClient,
+  ) {}
+
+  /**
+   * Semantic (pgvector cosine) leg of hybrid search, best-effort: returns no
+   * results (keyword-only search) when no embedding client is configured or the
+   * Bedrock call fails.
+   */
+  private async semanticSearch(
+    context: TenantContext,
+    query: string,
+    meetingId?: string,
+    limit = 10,
+  ): Promise<VectorSearchResultRow[]> {
+    if (!this.embeddingClient) return [];
+    try {
+      const [embedding] = await this.embeddingClient.embed([query]);
+      if (!embedding) return [];
+      return await searchMeetingEmbeddings(this.prisma, {
+        userId: context.userId,
+        embedding,
+        limit,
+        meetingId,
+      });
+    } catch {
+      return [];
+    }
+  }
 
   /**
    * Hybrid Search:
@@ -49,6 +80,25 @@ export class SearchService {
       .split(/\s+/)
       .map((k) => k.trim())
       .filter((k) => k.length > 1);
+
+    // 1b. Semantic search via pgvector (ADR-016) — cosine similarity per segment.
+    const semanticRows = await this.semanticSearch(context, cleanQuery, meetingId, limit * 2);
+    const semanticResults: SearchCitation[] = semanticRows.map((row) => {
+      const sim = Math.max(0, Math.min(1, row.similarity));
+      // Conservative ramp: ~0.6 similarity ≈ 0.5, 0.9+ ≈ 0.9.
+      const score = sim >= 0.5 ? Math.min(0.9, 0.2 + (sim - 0.5) * 1.75) : Math.max(0.15, sim * 0.35);
+      return {
+        meetingId: row.meetingId,
+        meetingTitle: row.meetingTitle,
+        segmentId: row.segmentId,
+        timestamp: formatTimestamp(row.startMs),
+        startMs: row.startMs,
+        text: row.text,
+        speakerLabel: row.speakerLabel,
+        score,
+        matchType: "semantic" as const,
+      };
+    });
 
     // 1. Keyword search on TranscriptSegment
     const segments = await this.prisma.transcriptSegment.findMany({
@@ -73,8 +123,7 @@ export class SearchService {
     });
 
     // 2. Keyword search on Decisions & Topics for broader coverage
-    const decisions = await this.prisma.decision.findMany({
-      where: {
+    const decisions = await this.prisma.decision.findMany({      where: {
         meeting: {
           userId: context.userId,
           ...(meetingId ? { id: meetingId } : {}),
@@ -203,9 +252,9 @@ export class SearchService {
       }
     }
 
-    // Deduplicate and rank by score descending
+    // Deduplicate and rank by score descending (semantic/keyword overlap keeps the highest).
     const uniqueMap = new Map<string, SearchCitation>();
-    for (const item of results) {
+    for (const item of [...results, ...semanticResults]) {
       const key = `${item.meetingId}-${item.segmentId || item.text.substring(0, 30)}`;
       if (!uniqueMap.has(key) || uniqueMap.get(key)!.score < item.score) {
         uniqueMap.set(key, item);

@@ -1,9 +1,13 @@
-import type { PrismaClient} from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
 import { CreditTransactionType } from "@prisma/client";
 import type { TenantContext } from "./base.js";
+import { reserveCreditsAtomic, settleCreditsAtomic } from "../credit.sql.js";
 
 export class InsufficientBalanceError extends Error {
-  constructor(public readonly availableMicros: bigint, public readonly requestedMicros: bigint) {
+  constructor(
+    public readonly availableMicros: bigint,
+    public readonly requestedMicros: bigint,
+  ) {
     super(
       `Insufficient credit balance: available ${availableMicros} micros, requested ${requestedMicros} micros.`,
     );
@@ -70,34 +74,36 @@ export class CreditRepository {
     });
   }
 
+  /**
+   * Places a hold on available credit. Atomic (single conditional UPDATE), so
+   * concurrent reservations can never exceed the available balance (ADR-022).
+   */
   async reserveCredits(
     context: TenantContext,
     amountMicros: bigint,
     description: string,
     referenceId?: string,
   ) {
+    if (amountMicros <= 0n) {
+      throw new Error("Reservation amount must be positive.");
+    }
     return this.prisma.$transaction(async (tx) => {
-      const ledger = await tx.creditLedger.upsert({
+      await tx.creditLedger.upsert({
         where: { userId: context.userId },
-        create: {
-          userId: context.userId,
-          balanceMicros: 0n,
-          reservedMicros: 0n,
-        },
+        create: { userId: context.userId, balanceMicros: 0n, reservedMicros: 0n },
         update: {},
       });
 
-      const available = ledger.balanceMicros - ledger.reservedMicros;
-      if (available < amountMicros) {
-        throw new InsufficientBalanceError(available, amountMicros);
+      const reserved = await reserveCreditsAtomic(tx, context.userId, amountMicros);
+      if (!reserved) {
+        const ledger = await tx.creditLedger.findUniqueOrThrow({
+          where: { userId: context.userId },
+        });
+        throw new InsufficientBalanceError(
+          ledger.balanceMicros - ledger.reservedMicros,
+          amountMicros,
+        );
       }
-
-      const updated = await tx.creditLedger.update({
-        where: { userId: context.userId },
-        data: {
-          reservedMicros: { increment: amountMicros },
-        },
-      });
 
       await tx.creditTransaction.create({
         data: {
@@ -110,38 +116,61 @@ export class CreditRepository {
         },
       });
 
-      return updated;
+      return tx.creditLedger.findUniqueOrThrow({ where: { userId: context.userId } });
     });
   }
 
+  /**
+   * Releases `reservedMicros` and debits `actualMicros`. The debit is capped at
+   * what is actually available, so the balance never goes negative; the uncovered
+   * part is reported as `shortfallMicros` (and noted on the transaction).
+   */
   async settleCredits(
     context: TenantContext,
     reservedMicros: bigint,
     actualMicros: bigint,
     description: string,
     referenceId?: string,
-  ) {
+  ): Promise<{
+    balanceMicros: bigint;
+    reservedMicros: bigint;
+    chargedMicros: bigint;
+    shortfallMicros: bigint;
+  }> {
     return this.prisma.$transaction(async (tx) => {
-      const updated = await tx.creditLedger.update({
+      await tx.creditLedger.upsert({
         where: { userId: context.userId },
-        data: {
-          reservedMicros: { decrement: reservedMicros },
-          balanceMicros: { decrement: actualMicros },
-        },
+        create: { userId: context.userId, balanceMicros: 0n, reservedMicros: 0n },
+        update: {},
       });
+
+      const row = await settleCreditsAtomic(tx, context.userId, reservedMicros, actualMicros);
+      if (!row) {
+        throw new Error(`Credit ledger missing for user '${context.userId}'.`);
+      }
+      const chargedMicros = BigInt(row.chargedMicros);
+      const shortfallMicros = actualMicros - chargedMicros;
 
       await tx.creditTransaction.create({
         data: {
           userId: context.userId,
-          amountMicros: -actualMicros,
+          amountMicros: -chargedMicros,
           transactionType: CreditTransactionType.CREDIT_SETTLE,
-          description,
+          description:
+            shortfallMicros > 0n
+              ? `${description} (uncovered: ${shortfallMicros} micros)`
+              : description,
           referenceType: "meeting_settle",
           referenceId,
         },
       });
 
-      return updated;
+      return {
+        balanceMicros: BigInt(row.balanceMicros),
+        reservedMicros: BigInt(row.reservedMicros),
+        chargedMicros,
+        shortfallMicros,
+      };
     });
   }
 
@@ -179,10 +208,7 @@ export class CreditRepository {
     });
   }
 
-  async listTransactions(
-    context: TenantContext,
-    options?: { limit?: number; offset?: number },
-  ) {
+  async listTransactions(context: TenantContext, options?: { limit?: number; offset?: number }) {
     return this.prisma.creditTransaction.findMany({
       where: { userId: context.userId },
       orderBy: { createdAt: "desc" },
@@ -224,10 +250,7 @@ export class CreditRepository {
       totalCostMicros += ev.costMicros;
       if (ev.operationType === "AUDIO_TRANSCRIPTION" && ev.unit === "minutes") {
         totalAudioMinutes += ev.quantity;
-      } else if (
-        ev.operationType === "LLM_ANALYSIS" ||
-        ev.operationType.startsWith("LLM_")
-      ) {
+      } else if (ev.operationType === "LLM_ANALYSIS" || ev.operationType.startsWith("LLM_")) {
         totalLlmTokens += ev.quantity;
       }
     }
@@ -241,4 +264,3 @@ export class CreditRepository {
     };
   }
 }
-

@@ -5,6 +5,7 @@ import { LocalAuthProvider } from "../src/auth/local.provider.js";
 import { Role, ProposalActionType, ProposalStatus } from "@dawwen/db";
 
 import type { Proposal, PrismaClient } from "@dawwen/db";
+import { proposalUpdateMany } from "./helpers/proposal-store.js";
 
 describe("API Tenant Isolation: A user can never read or modify another user's data", () => {
   let app: FastifyInstance;
@@ -53,15 +54,26 @@ describe("API Tenant Isolation: A user can never read or modify another user's d
     user: {
       findUnique: vi.fn().mockImplementation(({ where }: { where: { id: string } }) => {
         if (where.id === aliceId) {
-          return Promise.resolve({ id: aliceId, email: "alice@example.com", name: "Alice", role: Role.OWNER });
+          return Promise.resolve({
+            id: aliceId,
+            email: "alice@example.com",
+            name: "Alice",
+            role: Role.OWNER,
+          });
         }
         if (where.id === bobId) {
-          return Promise.resolve({ id: bobId, email: "bob@example.com", name: "Bob", role: Role.OWNER });
+          return Promise.resolve({
+            id: bobId,
+            email: "bob@example.com",
+            name: "Bob",
+            role: Role.OWNER,
+          });
         }
         return Promise.resolve(null);
       }),
     },
     proposal: {
+      updateMany: vi.fn().mockImplementation(proposalUpdateMany(proposalsStore)),
       findUnique: vi.fn().mockImplementation(({ where }: { where: { id: string } }) => {
         return Promise.resolve(proposalsStore.get(where.id) || null);
       }),
@@ -70,28 +82,48 @@ describe("API Tenant Isolation: A user can never read or modify another user's d
           Array.from(proposalsStore.values()).filter((p) => p.userId === where.userId),
         );
       }),
-      update: vi.fn().mockImplementation(({ where, data }: { where: { id: string }; data: Partial<Proposal> }) => {
-        const existing = proposalsStore.get(where.id);
-        if (existing) {
-          Object.assign(existing, data);
-          return Promise.resolve(existing);
-        }
-        return Promise.resolve(null);
-      }),
+      update: vi
+        .fn()
+        .mockImplementation(
+          ({ where, data }: { where: { id: string }; data: Partial<Proposal> }) => {
+            const existing = proposalsStore.get(where.id);
+            if (existing) {
+              Object.assign(existing, data);
+              return Promise.resolve(existing);
+            }
+            return Promise.resolve(null);
+          },
+        ),
     },
     userSettings: {
-      upsert: vi.fn().mockImplementation(({ where, create, update }: { where: { userId: string }; create?: { language?: string; timezone?: string; audioRetentionDays?: number }; update?: { language?: string; timezone?: string; audioRetentionDays?: number } }) => {
-        return Promise.resolve({
-          userId: where.userId,
-          language: update?.language || create?.language || "ar",
-          timezone: update?.timezone || create?.timezone || "Africa/Cairo",
-          audioRetentionDays: update?.audioRetentionDays || create?.audioRetentionDays || 7,
-        });
-      }),
+      upsert: vi
+        .fn()
+        .mockImplementation(
+          ({
+            where,
+            create,
+            update,
+          }: {
+            where: { userId: string };
+            create?: { language?: string; timezone?: string; audioRetentionDays?: number };
+            update?: { language?: string; timezone?: string; audioRetentionDays?: number };
+          }) => {
+            return Promise.resolve({
+              userId: where.userId,
+              language: update?.language || create?.language || "ar",
+              timezone: update?.timezone || create?.timezone || "Africa/Cairo",
+              audioRetentionDays: update?.audioRetentionDays || create?.audioRetentionDays || 7,
+            });
+          },
+        ),
     },
     recordingConsent: {
       findMany: vi.fn().mockImplementation(({ where }: { where: { userId: string } }) => {
-        return Promise.resolve(where.userId === aliceId ? [{ id: "c-alice", userId: aliceId, participantName: "Alice Guest" }] : []);
+        return Promise.resolve(
+          where.userId === aliceId
+            ? [{ id: "c-alice", userId: aliceId, participantName: "Alice Guest" }]
+            : [],
+        );
       }),
     },
   } as unknown as PrismaClient;
@@ -109,7 +141,7 @@ describe("API Tenant Isolation: A user can never read or modify another user's d
       authProvider: localAuthProvider,
     });
 
-    const aliceTokens = await localAuthProvider.issueTokens({
+    const aliceTokens = await localAuthProvider.issueAccessToken({
       id: aliceId,
       email: "alice@example.com",
       name: "Alice",
@@ -117,7 +149,7 @@ describe("API Tenant Isolation: A user can never read or modify another user's d
     });
     aliceToken = aliceTokens.accessToken;
 
-    const bobTokens = await localAuthProvider.issueTokens({
+    const bobTokens = await localAuthProvider.issueAccessToken({
       id: bobId,
       email: "bob@example.com",
       name: "Bob",
@@ -144,15 +176,15 @@ describe("API Tenant Isolation: A user can never read or modify another user's d
     expect(proposals[0].userId).toBe(bobId);
   });
 
-  it("User B is blocked from approving User A's proposal (400 Cross-tenant violation)", async () => {
+  it("User B is blocked from approving User A's proposal (404, existence not revealed)", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/proposals/prop-alice-1/approve",
       headers: { authorization: `Bearer ${bobToken}` },
     });
 
-    expect(res.statusCode).toBe(400);
-    expect(res.json().message).toContain("Cross-tenant access violation");
+    expect(res.statusCode).toBe(404);
+    expect(res.json().message).toBe("Proposal not found");
 
     // Alice's proposal remains PENDING_APPROVAL
     expect(proposalsStore.get("prop-alice-1")!.status).toBe(ProposalStatus.PENDING_APPROVAL);

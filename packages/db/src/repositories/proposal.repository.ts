@@ -1,17 +1,19 @@
-import type {
-  PrismaClient,
-  Proposal,
-  ProposalActionType,
-  Prisma} from "@prisma/client";
-import {
-  ProposalStatus
-} from "@prisma/client";
-import type { TenantContext} from "./base.js";
+import type { PrismaClient, Proposal, ProposalActionType, Prisma } from "@prisma/client";
+import { ProposalStatus } from "@prisma/client";
+import type { TenantContext } from "./base.js";
 import { CrossTenantAccessViolationError } from "./base.js";
 import {
+  allowedSourceStatuses,
   validateProposalTransition,
-  transitionProposal,
+  ProposalAlreadyClaimedError,
 } from "../proposals/state-machine.js";
+
+export class ProposalNotFoundError extends Error {
+  constructor(public readonly proposalId: string) {
+    super(`Proposal '${proposalId}' not found.`);
+    this.name = "ProposalNotFoundError";
+  }
+}
 
 export class ProposalRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -67,58 +69,74 @@ export class ProposalRepository {
     });
   }
 
+  /**
+   * Moves a proposal to `to` with ONE conditional UPDATE (status must be one of the
+   * allowed source statuses). Two concurrent requests can never both succeed, which
+   * is what keeps side effects from running twice (ADR-022).
+   */
+  private async transitionAtomically(
+    context: TenantContext,
+    proposalId: string,
+    to: ProposalStatus,
+    data: Prisma.ProposalUpdateManyMutationInput = {},
+  ): Promise<Proposal> {
+    const result = await this.prisma.proposal.updateMany({
+      where: {
+        id: proposalId,
+        userId: context.userId,
+        status: { in: allowedSourceStatuses(to) },
+      },
+      data: { ...data, status: to },
+    });
+
+    if (result.count === 1) {
+      const updated = await this.findById(context, proposalId);
+      if (!updated) throw new Error(`Proposal '${proposalId}' not found.`);
+      return updated;
+    }
+
+    // Nothing updated: explain why (missing, other tenant, invalid transition, or lost a race).
+    const current = await this.findById(context, proposalId);
+    if (!current) {
+      throw new ProposalNotFoundError(proposalId);
+    }
+    const alreadyClaimed: ProposalStatus[] = [
+      ProposalStatus.EXECUTING,
+      ProposalStatus.EXECUTED,
+      ProposalStatus.FAILED,
+    ];
+    if (to === ProposalStatus.EXECUTING && alreadyClaimed.includes(current.status)) {
+      throw new ProposalAlreadyClaimedError(proposalId);
+    }
+    validateProposalTransition(current.status, to);
+    throw new ProposalAlreadyClaimedError(proposalId);
+  }
+
   async approve(context: TenantContext, proposalId: string): Promise<Proposal> {
-    const proposal = await this.findById(context, proposalId);
-    if (!proposal) {
-      throw new Error(`Proposal '${proposalId}' not found.`);
-    }
-
-    validateProposalTransition(proposal.status, ProposalStatus.APPROVED);
-
-    return this.prisma.proposal.update({
-      where: { id: proposalId },
-      data: { status: ProposalStatus.APPROVED },
-    });
+    return this.transitionAtomically(context, proposalId, ProposalStatus.APPROVED);
   }
 
-  async reject(
-    context: TenantContext,
-    proposalId: string,
-    reason?: string,
-  ): Promise<Proposal> {
-    const proposal = await this.findById(context, proposalId);
-    if (!proposal) {
-      throw new Error(`Proposal '${proposalId}' not found.`);
-    }
-
-    validateProposalTransition(proposal.status, ProposalStatus.REJECTED);
-
-    return this.prisma.proposal.update({
-      where: { id: proposalId },
-      data: {
-        status: ProposalStatus.REJECTED,
-        reason: reason ?? proposal.reason,
-      },
-    });
+  async reject(context: TenantContext, proposalId: string, reason?: string): Promise<Proposal> {
+    return this.transitionAtomically(
+      context,
+      proposalId,
+      ProposalStatus.REJECTED,
+      reason !== undefined ? { reason } : {},
+    );
   }
 
-  async markExecuted(
-    context: TenantContext,
-    proposalId: string,
-  ): Promise<Proposal> {
-    const proposal = await this.findById(context, proposalId);
-    if (!proposal) {
-      throw new Error(`Proposal '${proposalId}' not found.`);
-    }
+  /**
+   * Atomically claims an APPROVED proposal for execution (APPROVED -> EXECUTING).
+   * Exactly one caller wins; the others get ProposalAlreadyClaimedError.
+   */
+  async claimForExecution(context: TenantContext, proposalId: string): Promise<Proposal> {
+    return this.transitionAtomically(context, proposalId, ProposalStatus.EXECUTING);
+  }
 
-    const transition = transitionProposal(proposal, ProposalStatus.EXECUTED);
-
-    return this.prisma.proposal.update({
-      where: { id: proposalId },
-      data: {
-        status: transition.newStatus,
-        executedAt: transition.executedAt,
-      },
+  async markExecuted(context: TenantContext, proposalId: string): Promise<Proposal> {
+    return this.transitionAtomically(context, proposalId, ProposalStatus.EXECUTED, {
+      executedAt: new Date(),
+      error: null,
     });
   }
 
@@ -127,21 +145,8 @@ export class ProposalRepository {
     proposalId: string,
     errorMessage: string,
   ): Promise<Proposal> {
-    const proposal = await this.findById(context, proposalId);
-    if (!proposal) {
-      throw new Error(`Proposal '${proposalId}' not found.`);
-    }
-
-    const transition = transitionProposal(proposal, ProposalStatus.FAILED, {
+    return this.transitionAtomically(context, proposalId, ProposalStatus.FAILED, {
       error: errorMessage,
-    });
-
-    return this.prisma.proposal.update({
-      where: { id: proposalId },
-      data: {
-        status: transition.newStatus,
-        error: transition.error,
-      },
     });
   }
 }

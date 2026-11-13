@@ -37,12 +37,18 @@ const baseSchema = z.object({
   BEDROCK_EMBEDDING_MODEL_ID: optionalString,
   EMBEDDING_DIM: z.coerce.number().int().positive().default(1024),
   AUTH_PROVIDER: z.enum(["local", "cognito"]).default("local"),
+  /** Required when AUTH_PROVIDER=cognito (ADR-017). */
+  COGNITO_USER_POOL_ID: optionalString,
+  COGNITO_CLIENT_ID: optionalString,
   ASR_PROVIDER: z
-    .enum(["elevenlabs", "speechmatics", "whisper-http", "transcribe", "fake"])
+    .enum(["elevenlabs", "speechmatics", "whisper-http", "qwencleo-http", "transcribe", "fake"])
     .default("fake"),
-  LLM_PROVIDER: z.enum(["bedrock", "fake"]).default("fake"),
+  /** Required when ASR_PROVIDER=qwencleo-http or whisper-http (self-hosted ASR server, ADR-018). */
+  ASR_HTTP_URL: optionalString,
+  /** Shared by api + worker (read only where needed). */
   DEMO_MODE: booleanString,
   PUBLIC_BASE_URL: optionalString,
+  LLM_PROVIDER: z.enum(["bedrock", "fake"]).default("fake"),
   PRICING_CONFIG: z.string().min(2),
 });
 
@@ -61,6 +67,7 @@ export interface BaseConfig {
   embeddingDim: number;
   authProvider: BaseEnv["AUTH_PROVIDER"];
   asrProvider: BaseEnv["ASR_PROVIDER"];
+  asrHttpUrl: string | undefined;
   llmProvider: BaseEnv["LLM_PROVIDER"];
   demoMode: boolean;
   publicBaseUrl: string | undefined;
@@ -86,6 +93,12 @@ function crossFieldChecks(e: BaseEnv): string[] {
     if (!e.BEDROCK_EMBEDDING_MODEL_ID)
       issues.push("BEDROCK_EMBEDDING_MODEL_ID: required when LLM_PROVIDER=bedrock");
   }
+  if (e.AUTH_PROVIDER === "cognito" && !e.COGNITO_USER_POOL_ID) {
+    issues.push("COGNITO_USER_POOL_ID: required when AUTH_PROVIDER=cognito (no mock pool fallback)");
+  }
+  if (isHttpAsrProvider(e.ASR_PROVIDER) && !e.ASR_HTTP_URL) {
+    issues.push(`ASR_HTTP_URL: required when ASR_PROVIDER=${e.ASR_PROVIDER}`);
+  }
   if (e.NODE_ENV === "production") {
     if (e.AWS_ENDPOINT_URL) issues.push("AWS_ENDPOINT_URL: must not be set in production");
     if (e.DEMO_MODE && (e.ASR_PROVIDER !== "fake" || e.LLM_PROVIDER !== "fake")) {
@@ -93,6 +106,16 @@ function crossFieldChecks(e: BaseEnv): string[] {
     }
   }
   return issues;
+}
+
+/** Providers that talk to a self-hosted HTTP ASR server instead of a SaaS API. */
+export function isHttpAsrProvider(provider: string): boolean {
+  return provider === "qwencleo-http" || provider === "whisper-http";
+}
+
+/** Providers that need a SaaS-style API key credential. */
+export function isKeyedAsrProvider(provider: string): boolean {
+  return !isHttpAsrProvider(provider) && provider !== "fake";
 }
 
 function toBaseConfig(e: BaseEnv): BaseConfig {
@@ -124,6 +147,7 @@ function toBaseConfig(e: BaseEnv): BaseConfig {
     embeddingDim: e.EMBEDDING_DIM,
     authProvider: e.AUTH_PROVIDER,
     asrProvider: e.ASR_PROVIDER,
+    asrHttpUrl: e.ASR_HTTP_URL,
     llmProvider: e.LLM_PROVIDER,
     demoMode: e.DEMO_MODE,
     publicBaseUrl: e.PUBLIC_BASE_URL,
@@ -151,6 +175,8 @@ export interface ApiConfig extends BaseConfig {
   port: number;
   googleOAuthJson: string | undefined;
   corsOrigins: string[];
+  cognitoUserPoolId: string | undefined;
+  cognitoClientId: string | undefined;
 }
 
 /** Terraform contract: api container port. */
@@ -165,22 +191,51 @@ export function loadApiConfig(env: Env = process.env): ApiConfig {
     corsOrigins: e.CORS_ORIGINS.split(",")
       .map((s) => s.trim())
       .filter(Boolean),
+    cognitoUserPoolId: e.COGNITO_USER_POOL_ID,
+    cognitoClientId: e.COGNITO_CLIENT_ID,
+    asrHttpUrl: e.ASR_HTTP_URL,
   };
 }
 
 /* ---------------- worker ---------------- */
 const workerSchema = baseSchema.extend({
   ASR_API_KEY: optionalString,
+  ASR_HTTP_API_KEY: optionalString,
+  /** Free-form JSON string; parsed by the provider adapter. */
+  ASR_HTTP_OPTIONS: optionalString,
+  /** Sweep meetings stuck in TRANSCRIBING/ANALYZING; 0 disables (ADR-019). */
+  STUCK_SWEEP_SECONDS: z.coerce.number().int().nonnegative().default(300),
+  /** Meetings older than this in TRANSCRIBING/ANALYZING are marked FAILED. */
+  STUCK_MEETING_MINUTES: z.coerce.number().int().positive().default(30),
+  /** Reminder dispatcher tick; 0 disables (ADR-020). */
+  REMINDER_DISPATCH_SECONDS: z.coerce.number().int().nonnegative().default(60),
+  /** Verified SES sender identity; email channel is only used when set. */
+  EMAIL_FROM: optionalString,
 });
 
 export interface WorkerConfig extends BaseConfig {
   asrApiKey: string | undefined;
+  asrHttpApiKey: string | undefined;
+  asrHttpOptionsJson: string | undefined;
+  stuckSweepSeconds: number;
+  stuckMeetingMinutes: number;
+  reminderDispatchSeconds: number;
+  emailFrom: string | undefined;
 }
 
 export function loadWorkerConfig(env: Env = process.env): WorkerConfig {
   const e = parseWith(workerSchema, env);
-  if (e.ASR_PROVIDER !== "fake" && !e.ASR_API_KEY) {
+  if (isKeyedAsrProvider(e.ASR_PROVIDER) && !e.ASR_API_KEY) {
     throw new ConfigError([`ASR_API_KEY: required when ASR_PROVIDER=${e.ASR_PROVIDER}`]);
   }
-  return { ...toBaseConfig(e), asrApiKey: e.ASR_API_KEY };
+  return {
+    ...toBaseConfig(e),
+    asrApiKey: e.ASR_API_KEY,
+    asrHttpApiKey: e.ASR_HTTP_API_KEY,
+    asrHttpOptionsJson: e.ASR_HTTP_OPTIONS,
+    stuckSweepSeconds: e.STUCK_SWEEP_SECONDS,
+    stuckMeetingMinutes: e.STUCK_MEETING_MINUTES,
+    reminderDispatchSeconds: e.REMINDER_DISPATCH_SECONDS,
+    emailFrom: e.EMAIL_FROM,
+  };
 }

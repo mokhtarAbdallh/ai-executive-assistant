@@ -84,7 +84,8 @@
     "APPROVED": "Approved",
     "EXECUTED": "Executed",
     "REJECTED": "Rejected",
-    "FAILED": "Failed"
+    "FAILED": "Failed",
+    "EXECUTING": "Executing"
   },
   "proposalAction": {
     "SCHEDULE_MEETING": "Schedule meeting",
@@ -138,6 +139,7 @@
     "filterApproved": "Approved",
     "filterProcessing": "Processing",
     "resultCount": "Results: {{value}}",
+    "loadMore": "Show older meetings",
     "metaTasks": "Tasks: {{count}}",
     "metaDecisions": "Decisions: {{count}}",
     "openMeeting": "Open meeting {{title}}",
@@ -172,6 +174,8 @@
     "recordingActive": "Recording…",
     "startRecording": "Start recording",
     "stopRecording": "Stop recording",
+    "recordedReady": "Recording ready ({{seconds}}). Press process to continue.",
+    "processingFailed": "Processing failed. Check the audio quality and try again.",
     "dropzoneText": "Drop an audio file here, or click to browse",
     "supportedFormats": "MP3, WAV, M4A, WEBM, OGG",
     "fileSize": "Size: {{size}} MB",
@@ -273,6 +277,14 @@
       "hint": "These proposals don't run until you approve them in the proposals inbox.",
       "emptyTitle": "No proposals for this meeting",
       "emptyBody": "When you ask Dawwen to schedule a meeting or send a message, the proposal appears here."
+    },
+    "processing": {
+      "failedTitle": "Processing stopped",
+      "failedBody": "Something went wrong while transcribing or analysing this meeting. You were not charged.",
+      "retry": "Try again",
+      "retrying": "Restarting…",
+      "retryQueued": "The meeting is back in the queue and will be processed shortly",
+      "audioGone": "The original audio was deleted, so you need to upload the recording again."
     }
   },
   "calendar": {
@@ -313,7 +325,8 @@
       "summarized": "Summarized",
       "processing": "Processing",
       "needs_review": "Needs review"
-    }
+    },
+    "connectFailed": "We couldn't connect your calendar. Please try again."
   },
   "proposals": {
     "title": "Proposals inbox",
@@ -337,7 +350,14 @@
     "rejectedToast": "Proposal rejected",
     "reject": "Reject",
     "rejectTitle": "Reject this proposal?",
-    "rejectHint": "Add a short reason (optional) — nothing will be executed."
+    "rejectHint": "Add a short reason (optional) — nothing will be executed.",
+    "errors": {
+      "proposal_incomplete": "This proposal is missing details (like a time or an email), so we won't guess. Reject it or ask for a clearer one.",
+      "calendar_not_connected": "Connect Google Calendar from the Calendar page first, then approve the booking.",
+      "email_not_configured": "Email sending isn't enabled on the server yet.",
+      "conflict": "This proposal was already handled.",
+      "execution_failed": "Execution failed and nothing happened. Try again in a bit."
+    }
   },
   "ask": {
     "title": "Ask Dawwen",
@@ -416,6 +436,8 @@
     "operation": {
       "AUDIO_TRANSCRIPTION": "Audio transcription",
       "LLM_ANALYSIS": "AI analysis",
+      "LLM_CHAT": "Assistant questions",
+      "EMBEDDING_GENERATION": "Embedding generation",
       "EMBEDDINGS": "Embeddings",
       "EMBEDDING": "Embeddings"
     },
@@ -424,7 +446,12 @@
       "tokens": "tokens",
       "embeddings": "embeddings",
       "count": "operations"
-    }
+    },
+    "topupAdminOnlyTitle": "How to add credit",
+    "topupAdminOnlyBody": "Transfer the amount (InstaPay or bank transfer) and send us the transfer reference with your account email. Credit is added once the transfer is reviewed — there is never an automatic charge.",
+    "adminTopupTitle": "Add credit to a user (admin)",
+    "adminUserEmail": "User email",
+    "adminForbidden": "Only an admin can add credit."
   },
   "settings": {
     "title": "Settings",
@@ -514,5 +541,28 @@
       "CANCELLED": "Cancelled"
     },
     "footerNote": "Every follow-up action needs explicit approval before it runs."
+  },
+  "auth": {
+    "tagline": "Meeting minutes in Egyptian Arabic and English — and you always make the final call.",
+    "loginTitle": "Sign in",
+    "loginSubtitle": "Welcome back to Dawwen.",
+    "registerTitle": "Create your account",
+    "registerSubtitle": "One minute and you can start recording meetings.",
+    "name": "Name",
+    "namePlaceholder": "Your name as it appears in minutes",
+    "email": "Email",
+    "password": "Password",
+    "passwordHint": "At least 8 characters.",
+    "loginBtn": "Sign in",
+    "registerBtn": "Create account",
+    "toRegister": "No account? Create one",
+    "toLogin": "Have an account? Sign in",
+    "invalidCredentials": "Wrong email or password.",
+    "emailTaken": "This email already has an account. Try signing in.",
+    "invalidInput": "Check your details: a valid email and a password of at least 8 characters.",
+    "offline": "We can't reach the server right now. Check your connection and try again.",
+    "loading": "Getting your account ready…",
+    "logout": "Sign out",
+    "sessionExpired": "Your session ended. Please sign in again."
   }
 }

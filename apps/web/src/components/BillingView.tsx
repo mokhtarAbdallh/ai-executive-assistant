@@ -9,6 +9,7 @@ import {
 } from "../api";
 import type { BillingBalance, CreditTransactionItem, UsageEventItem, UsageSummary } from "../types";
 import { formatDateTime, formatNumber, formatUsd } from "../lib/format";
+import { ApiError } from "../lib/http";
 import { cn } from "../lib/cn";
 import {
   Badge,
@@ -34,7 +35,7 @@ const TXN_TONE: Record<CreditTransactionItem["transactionType"], BadgeTone> = {
   CREDIT_REFUND: "info",
 };
 
-export function BillingView() {
+export function BillingView({ isAdmin = false }: { isAdmin?: boolean }) {
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
   const { toast } = useToast();
@@ -50,6 +51,7 @@ export function BillingView() {
   const [preset, setPreset] = useState<string>("10");
   const [customAmount, setCustomAmount] = useState("");
   const [reference, setReference] = useState("");
+  const [userEmail, setUserEmail] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const load = useCallback(async () => {
@@ -78,29 +80,39 @@ export function BillingView() {
   const availableDollars = balance ? Number(balance.availableMicros) / 1_000_000 : 0;
   const reservedDollars = balance ? Number(balance.reservedMicros) / 1_000_000 : 0;
 
+  // Admin-only (ADR-022): credits the account identified by email after a
+  // confirmed out-of-band transfer. Regular users only see transfer instructions.
   const submitTopup = async () => {
     const amount = customAmount ? Number.parseFloat(customAmount) : Number.parseFloat(preset);
-    if (!Number.isFinite(amount) || amount <= 0) return;
+    if (!Number.isFinite(amount) || amount <= 0 || !userEmail.trim()) return;
 
     setSubmitting(true);
     try {
-      const result = await topupCredits({
+      await topupCredits({
+        userEmail: userEmail.trim(),
         amountDollars: amount,
         reference: reference.trim() || undefined,
         description: `Top-up via manual payment (${formatUsd(amount, "en")})`,
       });
-      if (result.success) {
-        toast({
-          title: t("billing.topupSuccess", { amount: formatUsd(amount, lang) }),
-          tone: "success",
-        });
-        setTopupOpen(false);
-        setReference("");
-        setCustomAmount("");
-        await load();
-      }
-    } catch {
-      toast({ title: t("errors.generic"), tone: "error" });
+      toast({
+        title: t("billing.topupSuccess", { amount: formatUsd(amount, lang) }),
+        tone: "success",
+      });
+      setTopupOpen(false);
+      setReference("");
+      setCustomAmount("");
+      setUserEmail("");
+      await load();
+    } catch (err) {
+      const forbidden = err instanceof ApiError && err.status === 403;
+      toast({
+        title: forbidden
+          ? t("billing.adminForbidden")
+          : err instanceof Error
+            ? err.message
+            : t("errors.generic"),
+        tone: "error",
+      });
     } finally {
       setSubmitting(false);
     }
@@ -328,78 +340,103 @@ export function BillingView() {
         </CardBody>
       </Card>
 
-      <Modal
-        open={topupOpen}
-        onClose={() => setTopupOpen(false)}
-        title={t("billing.topupTitle")}
-        description={t("billing.topupBody")}
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setTopupOpen(false)} disabled={submitting}>
-              {t("common.cancel")}
-            </Button>
-            <Button variant="primary" loading={submitting} onClick={submitTopup}>
-              {t("billing.confirmTopup")}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <div className="space-y-2">
-            <p className="text-xs font-medium text-fg-muted">{t("billing.amount")}</p>
-            <Segmented
-              ariaLabel={t("billing.amount")}
-              value={preset}
-              onChange={(next) => {
-                setPreset(next);
-                setCustomAmount("");
-              }}
-              options={[
-                { value: "5", label: formatUsd(5, lang) },
-                { value: "10", label: formatUsd(10, lang) },
-                { value: "25", label: formatUsd(25, lang) },
-                { value: "50", label: formatUsd(50, lang) },
-              ]}
-            />
+      {isAdmin ? (
+        <Modal
+          open={topupOpen}
+          onClose={() => setTopupOpen(false)}
+          title={t("billing.adminTopupTitle")}
+          description={t("billing.topupBody")}
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setTopupOpen(false)} disabled={submitting}>
+                {t("common.cancel")}
+              </Button>
+              <Button variant="primary" loading={submitting} onClick={submitTopup}>
+                {t("billing.confirmTopup")}
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-4">
+            <Field label={t("billing.adminUserEmail")} htmlFor="topup-user-email" required>
+              <Input
+                id="topup-user-email"
+                type="email"
+                dir="ltr"
+                value={userEmail}
+                onChange={(event) => setUserEmail(event.target.value)}
+              />
+            </Field>
+
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-fg-muted">{t("billing.amount")}</p>
+              <Segmented
+                ariaLabel={t("billing.amount")}
+                value={preset}
+                onChange={(next) => {
+                  setPreset(next);
+                  setCustomAmount("");
+                }}
+                options={[
+                  { value: "5", label: formatUsd(5, lang) },
+                  { value: "10", label: formatUsd(10, lang) },
+                  { value: "25", label: formatUsd(25, lang) },
+                  { value: "50", label: formatUsd(50, lang) },
+                ]}
+              />
+            </div>
+
+            <Field
+              label={t("billing.customAmount")}
+              htmlFor="custom-amount"
+              hint={t("billing.customAmountHint")}
+            >
+              <Input
+                id="custom-amount"
+                type="number"
+                min={1}
+                step="0.5"
+                inputMode="decimal"
+                value={customAmount}
+                onChange={(event) => setCustomAmount(event.target.value)}
+                placeholder="15"
+                className="tabular"
+              />
+            </Field>
+
+            <Field
+              label={t("billing.reference")}
+              htmlFor="reference"
+              hint={t("billing.referenceHint")}
+            >
+              <Input
+                id="reference"
+                value={reference}
+                onChange={(event) => setReference(event.target.value)}
+                placeholder={t("billing.referencePlaceholder")}
+                dir="auto"
+              />
+            </Field>
+
+            <p className="rounded-xl border border-line bg-raised/40 p-3 text-xs leading-relaxed text-fg-muted">
+              {t("billing.manualNote")}
+            </p>
           </div>
-
-          <Field
-            label={t("billing.customAmount")}
-            htmlFor="custom-amount"
-            hint={t("billing.customAmountHint")}
-          >
-            <Input
-              id="custom-amount"
-              type="number"
-              min={1}
-              step="0.5"
-              inputMode="decimal"
-              value={customAmount}
-              onChange={(event) => setCustomAmount(event.target.value)}
-              placeholder="15"
-              className="tabular"
-            />
-          </Field>
-
-          <Field
-            label={t("billing.reference")}
-            htmlFor="reference"
-            hint={t("billing.referenceHint")}
-          >
-            <Input
-              id="reference"
-              value={reference}
-              onChange={(event) => setReference(event.target.value)}
-              placeholder={t("billing.referencePlaceholder")}
-              dir="auto"
-            />
-          </Field>
-
-          <p className="rounded-xl border border-line bg-raised/40 p-3 text-xs leading-relaxed text-fg-muted">
-            {t("billing.manualNote")}
-          </p>
-        </div>
-      </Modal>
+        </Modal>
+      ) : (
+        <Modal
+          open={topupOpen}
+          onClose={() => setTopupOpen(false)}
+          title={t("billing.topupAdminOnlyTitle")}
+          footer={
+            <Button variant="primary" onClick={() => setTopupOpen(false)}>
+              {t("common.close")}
+            </Button>
+          }
+        >
+          <p className="text-sm leading-relaxed text-fg-muted">{t("billing.topupAdminOnlyBody")}</p>
+        </Modal>
+      )}
     </div>
   );
 }

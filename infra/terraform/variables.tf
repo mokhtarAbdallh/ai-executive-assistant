@@ -187,9 +187,32 @@ variable "auth_provider" {
 }
 
 variable "asr_provider" {
-  description = "elevenlabs, speechmatics, whisper-http, transcribe, or fake"
+  description = "elevenlabs, speechmatics, whisper-http, qwencleo-http, transcribe, or fake"
   type        = string
-  default     = "elevenlabs"
+  default     = "qwencleo-http"
+}
+
+variable "asr_http_url" {
+  description = "Self-hosted ASR server base URL (required when asr_provider is qwencleo-http or whisper-http)."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = !(var.asr_provider == "qwencleo-http" || var.asr_provider == "whisper-http") || var.asr_http_url != ""
+    error_message = "asr_http_url is required when asr_provider is qwencleo-http or whisper-http."
+  }
+}
+
+variable "asr_http_api_key" {
+  description = "Optional shared key for the self-hosted ASR server. Empty = no key (VPC-internal access)."
+  type        = string
+  default     = ""
+}
+
+variable "email_from" {
+  description = "Verified SES sender identity (e.g. reminders@example.com). Empty = console/email channel disabled."
+  type        = string
+  default     = ""
 }
 
 variable "llm_provider" {
@@ -211,8 +234,8 @@ variable "public_base_url" {
 }
 
 variable "pricing_config" {
-  description = "JSON string containing customer pricing and provider costs"
+  description = "JSON string containing customer pricing and provider costs (USD micros); default matches docs/RUNBOOK example values."
   type        = string
-  default     = "{}"
+  default     = "{\"customerPricePerAudioMinuteMicros\":30000,\"providerCosts\":{\"asrPerAudioMinuteMicros\":{\"qwencleo-http\":1200,\"elevenlabs\":183333,\"fake\":0},\"llmPerMillionInputTokensMicros\":{\"bedrock\":3000000,\"fake\":0},\"llmPerMillionOutputTokensMicros\":{\"bedrock\":15000000,\"fake\":0},\"embeddingsPerMillionTokensMicros\":{\"bedrock\":20000,\"fake\":0}},\"lowBalanceThresholdMicros\":1000000}"
 }
 

@@ -12,6 +12,7 @@ import {
   Settings,
   Sparkles,
   Sun,
+  LogOut,
 } from "lucide-react";
 import { cn } from "../lib/cn";
 import type { Theme } from "../lib/theme";
@@ -57,6 +58,8 @@ interface AppShellProps {
   onOpenSearch: () => void;
   onToggleTheme: () => void;
   onChangeLanguage: (language: "ar" | "en") => void;
+  userName?: string;
+  onLogout?: () => void;
   children: ReactNode;
 }
 
@@ -70,6 +73,8 @@ export function AppShell({
   onNewMeeting,
   onOpenSearch,
   onToggleTheme,
+  userName,
+  onLogout,
   onChangeLanguage,
   children,
 }: AppShellProps) {
@@ -166,6 +171,19 @@ export function AppShell({
               onClick={onToggleTheme}
             />
           </div>
+
+          {onLogout ? (
+            <div className="flex items-center justify-between gap-2 px-1">
+              <span dir="auto" className="truncate text-sm text-fg-muted" title={userName}>
+                {userName}
+              </span>
+              <IconButton
+                label={t("auth.logout")}
+                icon={<LogOut className="h-4 w-4" />}
+                onClick={onLogout}
+              />
+            </div>
+          ) : null}
 
           <div
             className="flex items-center gap-2 px-1 text-xs text-fg-subtle"
@@ -300,6 +318,17 @@ export function AppShell({
           <span className="text-sm text-fg-muted">{t("language.label")}</span>
           <LanguageSwitch language={language} onChange={onChangeLanguage} />
         </div>
+
+        {onLogout ? (
+          <Button
+            variant="secondary"
+            className="w-full"
+            icon={<LogOut className="h-4 w-4" />}
+            onClick={onLogout}
+          >
+            {t("auth.logout")}
+          </Button>
+        ) : null}
 
         <p className="flex items-center gap-2 px-1 pt-1 text-xs text-fg-subtle">
           <span aria-hidden className={cn("h-1.5 w-1.5 rounded-full", HEALTH_DOT[health])} />

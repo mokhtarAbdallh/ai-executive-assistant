@@ -70,7 +70,7 @@ describe("Settings & Consents API", () => {
       authProvider: localAuthProvider,
     });
 
-    const tokens = await localAuthProvider.issueTokens({
+    const tokens = await localAuthProvider.issueAccessToken({
       id: testUserId,
       email: "tester@dawwen.ai",
       name: "Tester",

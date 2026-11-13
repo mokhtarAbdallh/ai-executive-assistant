@@ -17,7 +17,7 @@ import type {
   UserSettings,
 } from "./types";
 
-const TOKEN_KEY = "dawwen_access_token";
+import { apiFetch, apiJson, getAccessToken, setAccessToken, IS_DEMO_MODE } from "./lib/http";
 
 // In-memory demo store for seamless offline/standalone browser verification
 const DEMO_MEETINGS_STORE: MeetingDetail[] = [
@@ -53,16 +53,32 @@ const DEMO_MEETINGS_STORE: MeetingDetail[] = [
       updatedAt: new Date().toISOString(),
     },
     agendaItems: [
-      { id: "ag-1", meetingId: "demo-meet-01", title: "مراجعة حالة الـ Auth API والـ JWT", orderIndex: 0 },
-      { id: "ag-2", meetingId: "demo-meet-01", title: "تكامل الـ SQS Worker مع الـ Bedrock", orderIndex: 1 },
-      { id: "ag-3", meetingId: "demo-meet-01", title: "تجهيز شاشات الـ Frontend و الـ Review UI", orderIndex: 2 },
+      {
+        id: "ag-1",
+        meetingId: "demo-meet-01",
+        title: "مراجعة حالة الـ Auth API والـ JWT",
+        orderIndex: 0,
+      },
+      {
+        id: "ag-2",
+        meetingId: "demo-meet-01",
+        title: "تكامل الـ SQS Worker مع الـ Bedrock",
+        orderIndex: 1,
+      },
+      {
+        id: "ag-3",
+        meetingId: "demo-meet-01",
+        title: "تجهيز شاشات الـ Frontend و الـ Review UI",
+        orderIndex: 2,
+      },
     ],
     topics: [
       {
         id: "tp-1",
         meetingId: "demo-meet-01",
         title: "اعتماد بنية الـ Monorepo و الـ Auth",
-        summary: "سارة أكدت اكتمال الـ LocalAuthProvider وتأمينه بـ scryptSync مع نجاح اختبارات العزل بين المستأجرين.",
+        summary:
+          "سارة أكدت اكتمال الـ LocalAuthProvider وتأمينه بـ scryptSync مع نجاح اختبارات العزل بين المستأجرين.",
         sourceTs: "00:15",
         sourceSegmentIds: ["seg-1"],
         orderIndex: 0,
@@ -71,7 +87,8 @@ const DEMO_MEETINGS_STORE: MeetingDetail[] = [
         id: "tp-2",
         meetingId: "demo-meet-01",
         title: "خط معالجة الصوت الـ S3 → SQS Worker",
-        summary: "تم اختبار معالجة الصوت عبر LocalStack والتأكد من حذف الصوت الخام طبقاً لسياسة الخصوصية.",
+        summary:
+          "تم اختبار معالجة الصوت عبر LocalStack والتأكد من حذف الصوت الخام طبقاً لسياسة الخصوصية.",
         sourceTs: "01:05",
         sourceSegmentIds: ["seg-2", "seg-3"],
         orderIndex: 1,
@@ -308,76 +325,77 @@ const DEMO_MEETINGS_STORE: MeetingDetail[] = [
   },
 ];
 
-export function getStoredToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
-}
-
-export function setStoredToken(token: string): void {
-  localStorage.setItem(TOKEN_KEY, token);
-}
-
-export async function ensureAuth(): Promise<string> {
-  const existing = getStoredToken();
-  if (existing) return existing;
-
+/**
+ * Offline demo login (VITE_DEMO_MODE only). Real deployments use the login screen.
+ * The demo credentials are the seeded local account (packages/db/src/seed.ts).
+ */
+export async function ensureDemoAuth(): Promise<void> {
+  if (!IS_DEMO_MODE || getAccessToken()) return;
   try {
-    const loginRes = await fetch("/api/auth/login", {
+    const res = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: "demo@dawwen.ai", password: "Password123!" }),
+      body: JSON.stringify({ email: "demo@dawwen.ai", password: "DawwenDemo2026!" }),
     });
-
-    if (loginRes.ok) {
-      const data = await loginRes.json();
-      setStoredToken(data.accessToken);
-      return data.accessToken;
+    if (res.ok) {
+      const data = (await res.json()) as { accessToken: string };
+      setAccessToken(data.accessToken);
     }
-  } catch {
-    // offline
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
-
-  setStoredToken("demo-mock-token-dawwen");
-  return "demo-mock-token-dawwen";
 }
 
-async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
-  let token = getStoredToken();
-  if (!token) token = await ensureAuth();
-
-  const headers = new Headers(options.headers || {});
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  if (!headers.has("Content-Type") && !(options.body instanceof FormData)) {
-    headers.set("Content-Type", "application/json");
-  }
-
-  return fetch(url, { ...options, headers });
+/**
+ * Outside demo mode every failure propagates to the caller (and its error UI).
+ * In demo mode the caller falls through to the in-memory demo store.
+ */
+function rethrowUnlessDemo(err: unknown): void {
+  if (!IS_DEMO_MODE) throw err;
 }
+
+/** Throws ApiError on any non-2xx (after one silent token refresh on 401). */
+const authFetch = apiFetch;
 
 export async function fetchHealth(): Promise<{ status: string; uptimeSeconds?: number }> {
   try {
     const res = await fetch("/api/health");
-    if (res.ok) return res.json();
-  } catch {
-    // Return demo online status
+    if (res.ok) return (await res.json()) as { status: string; uptimeSeconds?: number };
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
-  return { status: "ok", uptimeSeconds: 120 };
+  return { status: IS_DEMO_MODE ? "ok" : "offline" };
 }
 
-export async function fetchMeetings(filter?: {
-  status?: string;
-  search?: string;
-}): Promise<MeetingSummary[]> {
+export interface MeetingsPage {
+  items: MeetingSummary[];
+  /** Pass back as `cursor` to get the next (older) page; null when there is none. */
+  nextCursor: string | null;
+}
+
+export const MEETINGS_PAGE_SIZE = 50;
+
+/** One page of meetings, newest first (ADR-024: keyset pagination via `x-next-cursor`). */
+export async function fetchMeetingsPage(cursor?: string | null): Promise<MeetingsPage> {
   try {
-    const params = new URLSearchParams();
-    if (filter?.status && filter.status !== "ALL") params.set("status", filter.status);
-    if (filter?.search) params.set("search", filter.search);
+    const params = new URLSearchParams({ limit: String(MEETINGS_PAGE_SIZE) });
+    if (cursor) params.set("cursor", cursor);
 
     const res = await authFetch(`/api/meetings?${params.toString()}`);
-    if (res.ok) return res.json();
-  } catch {
-    // Fallback to demo store
+    if (res.ok) {
+      return {
+        items: (await res.json()) as MeetingSummary[],
+        nextCursor: res.headers.get("x-next-cursor"),
+      };
+    }
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
+  return { items: demoMeetingSummaries(), nextCursor: null };
+}
+
+function demoMeetingSummaries(): MeetingSummary[] {
   return DEMO_MEETINGS_STORE.map((m) => ({
     id: m.id,
     title: m.title,
@@ -395,8 +413,8 @@ export async function fetchMeetingDetail(id: string): Promise<MeetingDetail> {
   try {
     const res = await authFetch(`/api/meetings/${id}`);
     if (res.ok) return res.json();
-  } catch {
-    // Fallback to demo store
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   const found = DEMO_MEETINGS_STORE.find((m) => m.id === id);
@@ -414,8 +432,8 @@ export async function createMeeting(data: {
       body: JSON.stringify({ title: data.title, language: data.language || "ar" }),
     });
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   const newMeeting: MeetingDetail = {
@@ -444,18 +462,15 @@ export async function createMeeting(data: {
   return newMeeting;
 }
 
-export async function updateMeeting(
-  id: string,
-  data: { title?: string },
-): Promise<MeetingSummary> {
+export async function updateMeeting(id: string, data: { title?: string }): Promise<MeetingSummary> {
   try {
     const res = await authFetch(`/api/meetings/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
     });
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   const found = DEMO_MEETINGS_STORE.find((m) => m.id === id);
@@ -470,8 +485,8 @@ export async function deleteMeeting(id: string): Promise<void> {
   try {
     const res = await authFetch(`/api/meetings/${id}`, { method: "DELETE" });
     if (res.ok) return;
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   const idx = DEMO_MEETINGS_STORE.findIndex((m) => m.id === id);
@@ -489,8 +504,8 @@ export async function updateTask(
       body: JSON.stringify(data),
     });
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   const m = DEMO_MEETINGS_STORE.find((meet) => meet.id === meetingId);
@@ -512,8 +527,8 @@ export async function updateDecision(
       body: JSON.stringify(data),
     });
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   const m = DEMO_MEETINGS_STORE.find((meet) => meet.id === meetingId);
@@ -524,12 +539,17 @@ export async function updateDecision(
   return data;
 }
 
+/** Re-queues a FAILED meeting for processing (ADR-023). Throws ApiError on refusal. */
+export async function retryMeetingProcessing(meetingId: string): Promise<void> {
+  await apiFetch(`/api/meetings/${meetingId}/retry`, { method: "POST" });
+}
+
 export async function approveAllMeetingItems(meetingId: string): Promise<MeetingSummary> {
   try {
     const res = await authFetch(`/api/meetings/${meetingId}/approve`, { method: "POST" });
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   const m = DEMO_MEETINGS_STORE.find((meet) => meet.id === meetingId);
@@ -546,8 +566,8 @@ export async function processDemoMeeting(meetingId: string): Promise<MeetingDeta
   try {
     const res = await authFetch(`/api/meetings/${meetingId}/process-demo`, { method: "POST" });
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   const found = DEMO_MEETINGS_STORE.find((m) => m.id === meetingId);
@@ -556,6 +576,74 @@ export async function processDemoMeeting(meetingId: string): Promise<MeetingDeta
     return found;
   }
   return DEMO_MEETINGS_STORE[0]!;
+}
+
+/**
+ * Real audio upload flow (ADR-018): presigned PUT directly to S3, never through the API.
+ * Throws on API/S3 failure — callers may fall back to the demo flow in dev/demo mode.
+ */
+export async function uploadMeetingAudio(
+  meetingId: string,
+  file: File,
+  consentConfirmed: boolean,
+): Promise<void> {
+  const contentType = file.type || "audio/webm";
+  const fileName = file.name || "recording.webm";
+
+  const res = await authFetch(`/api/meetings/${meetingId}/upload-url`, {
+    method: "POST",
+    body: JSON.stringify({
+      fileName,
+      fileSizeBytes: file.size,
+      contentType,
+      consentConfirmed,
+    }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error || `Upload-url failed (HTTP ${res.status})`);
+  }
+
+  const { uploadUrl } = (await res.json()) as { uploadUrl: string };
+  const put = await fetch(uploadUrl, {
+    method: "PUT",
+    body: file,
+    headers: { "Content-Type": contentType },
+  });
+  if (!put.ok) {
+    throw new Error(`Audio upload failed (HTTP ${put.status})`);
+  }
+}
+
+/** Fetches a meeting detail with NO demo fallback (throws on failure). */
+async function fetchMeetingDetailStrict(id: string): Promise<MeetingDetail> {
+  const res = await authFetch(`/api/meetings/${id}`);
+  if (!res.ok) {
+    throw new Error(`Meeting fetch failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as MeetingDetail;
+}
+
+/**
+ * Polls the real API until the pipeline settles (ADR-018).
+ * Resolves when status is REVIEW_PENDING / APPROVED / FAILED, or times out.
+ */
+export async function pollMeetingProcessing(
+  meetingId: string,
+  onTick?: (status: string) => void,
+  timeoutMs = 15 * 60_000,
+): Promise<MeetingDetail> {
+  const deadline = Date.now() + timeoutMs;
+  const terminal = new Set(["REVIEW_PENDING", "APPROVED", "FAILED"]);
+
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 4000));
+    const meeting = await fetchMeetingDetailStrict(meetingId);
+    onTick?.(meeting.status);
+    if (terminal.has(meeting.status)) return meeting;
+  }
+
+  return await fetchMeetingDetailStrict(meetingId);
 }
 
 export async function requestUploadUrl(
@@ -573,8 +661,8 @@ export async function requestUploadUrl(
       body: JSON.stringify(data),
     });
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
   return {
     uploadUrl: "https://mock-s3.localstack.dev/upload",
@@ -601,7 +689,8 @@ const DEMO_PROPOSALS_STORE: Proposal[] = [
       durationMinutes: 45,
     },
     status: "PENDING_APPROVAL",
-    reason: "اقترح الذكاء الاصطناعي هذا الاجتماع بناءً على الاتفاق في نهاية سبرنت الـ Core Pipeline.",
+    reason:
+      "اقترح الذكاء الاصطناعي هذا الاجتماع بناءً على الاتفاق في نهاية سبرنت الـ Core Pipeline.",
     createdAt: new Date(Date.now() - 3600000 * 2).toISOString(),
   },
   {
@@ -642,8 +731,8 @@ export async function fetchCalendarStatus(): Promise<CalendarConnectionStatus> {
   try {
     const res = await authFetch("/api/calendar/status");
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
   return {
     connected: DEMO_CALENDAR_CONNECTED,
@@ -654,19 +743,20 @@ export async function fetchCalendarStatus(): Promise<CalendarConnectionStatus> {
   };
 }
 
-export async function connectCalendar(code = "demo_code"): Promise<{ success: boolean; connected: boolean }> {
+/**
+ * Starts Google's OAuth consent screen (ADR-023). The browser leaves the app and
+ * comes back to `/?calendar=connected|error` via GET /api/calendar/callback.
+ * Resolves only in demo mode, where the connection is simulated in place.
+ */
+export async function connectCalendar(): Promise<{ success: boolean; connected: boolean }> {
   try {
-    const res = await authFetch("/api/calendar/callback", {
-      method: "POST",
-      body: JSON.stringify({ code }),
-    });
-    if (res.ok) {
-      DEMO_CALENDAR_CONNECTED = true;
-      DEMO_LAST_SYNCED = new Date().toISOString();
-      return res.json();
+    const { authUrl } = await apiJson<{ authUrl: string }>("/api/calendar/auth-url");
+    if (!IS_DEMO_MODE) {
+      window.location.assign(authUrl);
+      return new Promise(() => {}); // the page is navigating away
     }
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
   DEMO_CALENDAR_CONNECTED = true;
   DEMO_LAST_SYNCED = new Date().toISOString();
@@ -676,8 +766,8 @@ export async function connectCalendar(code = "demo_code"): Promise<{ success: bo
 export async function disconnectCalendar(): Promise<void> {
   try {
     await authFetch("/api/calendar/disconnect", { method: "POST" });
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
   DEMO_CALENDAR_CONNECTED = false;
 }
@@ -690,22 +780,25 @@ export async function syncCalendar(): Promise<{ success: boolean; lastSyncedAt: 
       DEMO_LAST_SYNCED = data.lastSyncedAt;
       return data;
     }
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
   DEMO_LAST_SYNCED = new Date().toISOString();
   return { success: true, lastSyncedAt: DEMO_LAST_SYNCED };
 }
 
-export async function fetchCalendarEvents(start?: string, end?: string): Promise<CalendarEventItem[]> {
+export async function fetchCalendarEvents(
+  start?: string,
+  end?: string,
+): Promise<CalendarEventItem[]> {
   try {
     const query = new URLSearchParams();
     if (start) query.set("start", start);
     if (end) query.set("end", end);
     const res = await authFetch(`/api/calendar/events?${query.toString()}`);
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   // Demo fallback events
@@ -762,7 +855,10 @@ export async function fetchCalendarEvents(start?: string, end?: string): Promise
       meetingId: m.id,
       title: m.title,
       start: m.scheduledStart || m.createdAt,
-      end: new Date(new Date(m.scheduledStart || m.createdAt).getTime() + (m.audioDurationSeconds || 1800) * 1000).toISOString(),
+      end: new Date(
+        new Date(m.scheduledStart || m.createdAt).getTime() +
+          (m.audioDurationSeconds || 1800) * 1000,
+      ).toISOString(),
       description: m.analysis?.tldr,
       status: m.tasks.some((t) => t.needsReview) ? "needs_review" : "summarized",
       isAiBooked: false,
@@ -780,8 +876,8 @@ export async function fetchProposals(status?: string): Promise<Proposal[]> {
       const data = await res.json();
       return data.proposals || data;
     }
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   if (status) {
@@ -799,8 +895,8 @@ export async function approveProposal(
       method: "POST",
     });
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   const found = DEMO_PROPOSALS_STORE.find((p) => p.id === proposalId);
@@ -827,8 +923,8 @@ export async function rejectProposal(proposalId: string, reason?: string): Promi
       body: JSON.stringify({ reason }),
     });
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   const found = DEMO_PROPOSALS_STORE.find((p) => p.id === proposalId);
@@ -890,15 +986,20 @@ export async function askAgent(
       body: JSON.stringify({ query, meetingId, conversationHistory }),
     });
     if (res.ok) return res.json();
-  } catch {
-    // Offline / Demo fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   const clean = query.trim().toLowerCase();
   const isEnglish = /[a-zA-Z]/.test(clean) && !/[\u0600-\u06FF]/.test(clean);
 
   // Intent 1: Scheduling proposal
-  if (clean.includes("احجز") || clean.includes("اقترح اجتماع") || clean.includes("schedule") || clean.includes("book")) {
+  if (
+    clean.includes("احجز") ||
+    clean.includes("اقترح اجتماع") ||
+    clean.includes("schedule") ||
+    clean.includes("book")
+  ) {
     const newProp: Proposal = {
       id: `prop-ai-${Date.now()}`,
       userId: "usr-demo",
@@ -1014,8 +1115,8 @@ export async function askAgent(
   // Answer with citations (Invariant 2)
   return {
     answer: isEnglish
-      ? 'Regarding your inquiry: Sarah confirmed completion of the LocalAuthProvider and tenant isolation tests [00:15], while Ahmed agreed to deliver the UI review screens before the end of the week [00:28].'
-      : 'بناءً على ما ورد في الاجتماع: أكدت المهندسة سارة اكتمال الـ LocalAuthProvider واختبارات العزل [00:15]، بينما تم الاتفاق على تسليم شاشات مراجعة الواجهات قبل نهاية الأسبوع [00:28].',
+      ? "Regarding your inquiry: Sarah confirmed completion of the LocalAuthProvider and tenant isolation tests [00:15], while Ahmed agreed to deliver the UI review screens before the end of the week [00:28]."
+      : "بناءً على ما ورد في الاجتماع: أكدت المهندسة سارة اكتمال الـ LocalAuthProvider واختبارات العزل [00:15]، بينما تم الاتفاق على تسليم شاشات مراجعة الواجهات قبل نهاية الأسبوع [00:28].",
     citations: [
       {
         meetingId: "demo-meet-01",
@@ -1053,8 +1154,8 @@ export async function hybridSearch(
     if (meetingId) qParams.set("meetingId", meetingId);
     const res = await authFetch(`/api/search?${qParams.toString()}`);
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   if (!query.trim()) return { results: [] };
@@ -1079,7 +1180,8 @@ export async function hybridSearch(
     },
   ];
   const demoResults = allResults.filter(
-    (r) => r.text.toLowerCase().includes(clean) || clean.includes("سبرنت") || clean.includes("auth"),
+    (r) =>
+      r.text.toLowerCase().includes(clean) || clean.includes("سبرنت") || clean.includes("auth"),
   );
 
   return { results: demoResults };
@@ -1093,8 +1195,8 @@ export async function fetchDrafts(meetingId?: string): Promise<{ drafts: FollowU
     const url = meetingId ? `/api/meetings/${meetingId}/drafts` : "/api/drafts";
     const res = await authFetch(url);
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   const drafts = meetingId
@@ -1110,8 +1212,8 @@ export async function createDraft(data: Partial<FollowUpDraft>): Promise<{ draft
       body: JSON.stringify(data),
     });
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   const draft: FollowUpDraft = {
@@ -1141,8 +1243,8 @@ export async function updateDraft(
       body: JSON.stringify(data),
     });
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   const draft = DEMO_DRAFTS_STORE.find((d) => d.id === draftId);
@@ -1159,8 +1261,8 @@ export async function proposeSendDraft(draftId: string): Promise<{ proposal: Pro
       method: "POST",
     });
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   const draft = DEMO_DRAFTS_STORE.find((d) => d.id === draftId);
@@ -1193,8 +1295,8 @@ export async function fetchReminders(meetingId?: string): Promise<{ reminders: R
     const url = meetingId ? `/api/meetings/${meetingId}/reminders` : "/api/reminders";
     const res = await authFetch(url);
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   const reminders = meetingId
@@ -1212,8 +1314,8 @@ export async function createReminder(
       body: JSON.stringify(data),
     });
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   if (data.proposeOnly) {
@@ -1259,8 +1361,8 @@ export async function cancelReminder(reminderId: string): Promise<{ reminder: Re
       method: "POST",
     });
     if (res.ok) return res.json();
-  } catch {
-    // Fallback
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   const found = DEMO_REMINDERS_STORE.find((r) => r.id === reminderId);
@@ -1346,44 +1448,54 @@ const DEMO_USAGE_EVENTS: UsageEventItem[] = [
 let DEMO_SETTINGS: UserSettings = {
   language: "ar",
   timezone: "Africa/Cairo",
-  audioRetentionDays: 7,
+  audioRetentionDays: 0,
 };
 
 export async function fetchBillingBalance(): Promise<BillingBalance> {
   try {
     const res = await authFetch("/api/billing/balance");
     if (res.ok) return res.json();
-  } catch {
-    // Fallback to demo
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
   return DEMO_BILLING_BALANCE;
 }
 
-export async function fetchBillingTransactions(): Promise<{ transactions: CreditTransactionItem[] }> {
+export async function fetchBillingTransactions(): Promise<{
+  transactions: CreditTransactionItem[];
+}> {
   try {
     const res = await authFetch("/api/billing/transactions");
     if (res.ok) return res.json();
-  } catch {
-    // Fallback to demo
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
   return { transactions: DEMO_TRANSACTIONS };
 }
 
-export async function fetchBillingUsage(): Promise<{ summary: UsageSummary; events: UsageEventItem[] }> {
+export async function fetchBillingUsage(): Promise<{
+  summary: UsageSummary;
+  events: UsageEventItem[];
+}> {
   try {
     const res = await authFetch("/api/billing/usage");
     if (res.ok) return res.json();
-  } catch {
-    // Fallback to demo
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
   return { summary: DEMO_USAGE_SUMMARY, events: DEMO_USAGE_EVENTS };
 }
 
 export async function topupCredits(payload: {
+  /** Target account (platform admins only; the API returns 403 otherwise). */
+  userEmail: string;
   amountDollars?: number;
   reference?: string;
   description?: string;
-}): Promise<{ success: boolean; transaction: CreditTransactionItem & { newBalanceMicros?: string; formattedNewBalance?: string } }> {
+}): Promise<{
+  success: boolean;
+  transaction: CreditTransactionItem & { newBalanceMicros?: string; formattedNewBalance?: string };
+}> {
   try {
     const res = await authFetch("/api/billing/topup", {
       method: "POST",
@@ -1391,8 +1503,8 @@ export async function topupCredits(payload: {
       body: JSON.stringify(payload),
     });
     if (res.ok) return res.json();
-  } catch {
-    // Fallback to demo
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
 
   const dollars = payload.amountDollars ?? 10;
@@ -1430,8 +1542,8 @@ export async function fetchSettings(): Promise<{ settings: UserSettings }> {
   try {
     const res = await authFetch("/api/settings");
     if (res.ok) return res.json();
-  } catch {
-    // Fallback to demo
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
   return { settings: DEMO_SETTINGS };
 }
@@ -1448,8 +1560,8 @@ export async function updateSettings(payload: {
       body: JSON.stringify(payload),
     });
     if (res.ok) return res.json();
-  } catch {
-    // Fallback to demo
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
   DEMO_SETTINGS = { ...DEMO_SETTINGS, ...payload };
   return { settings: DEMO_SETTINGS };
@@ -1459,8 +1571,8 @@ export async function exportAccountData(): Promise<Record<string, unknown>> {
   try {
     const res = await authFetch("/api/settings/export");
     if (res.ok) return res.json();
-  } catch {
-    // Fallback to demo
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
   return {
     metadata: {
@@ -1483,10 +1595,8 @@ export async function deleteAccount(): Promise<{ success: boolean }> {
       method: "DELETE",
     });
     if (res.ok) return res.json();
-  } catch {
-    // Fallback to demo
+  } catch (err) {
+    rethrowUnlessDemo(err);
   }
   return { success: true };
 }
-
-

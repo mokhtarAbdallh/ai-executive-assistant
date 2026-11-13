@@ -3,11 +3,12 @@ import {
   ConverseCommand,
   type Message,
 } from "@aws-sdk/client-bedrock-runtime";
-import { MeetingAnalysisSchema, type MeetingAnalysis } from "@dawwen/shared";
+import { MeetingAnalysisSchema, findInvalidCitations, type MeetingAnalysis } from "@dawwen/shared";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LlmClient, TranscriptContext, LlmAnalysisResult } from "../types.js";
+import { LlmAnalysisFailedError } from "../types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -94,6 +95,9 @@ Extract the complete meeting analysis strictly matching the requested JSON schem
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
     let lastError = "";
+    const validSegmentIds = new Set(context.segments.map((s) => s.id));
+    /** Schema-valid output whose only problem is citations (the worker strips those). */
+    let lastSchemaValid: MeetingAnalysis | null = null;
 
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       const command = new ConverseCommand({
@@ -106,7 +110,17 @@ Extract the complete meeting analysis strictly matching the requested JSON schem
         },
       });
 
-      const response = await this.client.send(command);
+      let response;
+      try {
+        response = await this.client.send(command);
+      } catch (err: unknown) {
+        throw new LlmAnalysisFailedError(
+          `Bedrock request failed on attempt ${attempt}: ${err instanceof Error ? err.message : String(err)}`,
+          totalInputTokens,
+          totalOutputTokens,
+          this.modelId,
+        );
+      }
 
       const usage = response.usage;
       totalInputTokens += usage?.inputTokens || 0;
@@ -118,6 +132,15 @@ Extract the complete meeting analysis strictly matching the requested JSON schem
       try {
         const parsedJson = JSON.parse(cleanedJson);
         const analysis: MeetingAnalysis = MeetingAnalysisSchema.parse(parsedJson);
+
+        // Invariant 2 (ADR-024): every cited segment id must exist in this transcript.
+        const citationProblems = findInvalidCitations(analysis, validSegmentIds);
+        if (citationProblems.length > 0) {
+          lastSchemaValid = analysis;
+          throw new Error(
+            `Citations must use only the segment ids given in <transcript>:\n${citationProblems.join("\n")}`,
+          );
+        }
 
         return {
           analysis,
@@ -144,8 +167,22 @@ Extract the complete meeting analysis strictly matching the requested JSON schem
       }
     }
 
-    throw new Error(
+    if (lastSchemaValid) {
+      // Out of repair attempts but the structure is valid: return it and let the
+      // caller drop the invented citations (enforceValidCitations).
+      return {
+        analysis: lastSchemaValid,
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
+        modelName: this.modelId,
+      };
+    }
+
+    throw new LlmAnalysisFailedError(
       `Bedrock meeting analysis failed after ${this.maxRetries} attempts. Last error: ${lastError}`,
+      totalInputTokens,
+      totalOutputTokens,
+      this.modelId,
     );
   }
 }

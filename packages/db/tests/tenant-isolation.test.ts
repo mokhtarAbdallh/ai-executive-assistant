@@ -86,17 +86,35 @@ describe("Tenant Isolation Invariant: A user can never read or modify another us
   });
 
   it("throws CrossTenantAccessViolationError when User B tries to approve User A's proposal", async () => {
-    const mockUpdate = vi.fn();
+    const record = {
+      id: "proposal-alice-calendar",
+      userId: userA.userId,
+      actionType: ProposalActionType.SCHEDULE_MEETING,
+      status: ProposalStatus.PENDING_APPROVAL as ProposalStatus,
+      payload: { summary: "Followup call" },
+    };
+    // Mirrors Postgres semantics: the conditional UPDATE only matches the owner's row.
+    const mockUpdateMany = vi
+      .fn()
+      .mockImplementation(
+        ({
+          where,
+          data,
+        }: {
+          where: { userId: string; status: { in: ProposalStatus[] } };
+          data: { status: ProposalStatus };
+        }) => {
+          if (where.userId !== record.userId || !where.status.in.includes(record.status)) {
+            return Promise.resolve({ count: 0 });
+          }
+          record.status = data.status;
+          return Promise.resolve({ count: 1 });
+        },
+      );
     const mockPrisma = {
       proposal: {
-        findUnique: vi.fn().mockResolvedValue({
-          id: "proposal-alice-calendar",
-          userId: userA.userId,
-          actionType: ProposalActionType.SCHEDULE_MEETING,
-          status: ProposalStatus.PENDING_APPROVAL,
-          payload: { summary: "Followup call" },
-        }),
-        update: mockUpdate,
+        findUnique: vi.fn().mockImplementation(() => Promise.resolve({ ...record })),
+        updateMany: mockUpdateMany,
       },
     } as unknown as PrismaClient;
 
@@ -106,16 +124,15 @@ describe("Tenant Isolation Invariant: A user can never read or modify another us
     await expect(repo.approve(userB, "proposal-alice-calendar")).rejects.toThrow(
       CrossTenantAccessViolationError,
     );
-
-    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(record.status).toBe(ProposalStatus.PENDING_APPROVAL);
 
     // Alice approving her own proposal succeeds
-    mockUpdate.mockResolvedValueOnce({
-      id: "proposal-alice-calendar",
-      status: ProposalStatus.APPROVED,
-    });
-
     const approved = await repo.approve(userA, "proposal-alice-calendar");
     expect(approved.status).toBe(ProposalStatus.APPROVED);
+    expect(mockUpdateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ userId: userA.userId }),
+      }),
+    );
   });
 });

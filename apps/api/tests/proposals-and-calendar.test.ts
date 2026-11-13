@@ -8,6 +8,7 @@ import { FakeCalendarProvider } from "../src/services/calendar.js";
 import { ProposalExecutor, ProposalNotApprovedError } from "../src/services/proposal-executor.js";
 import { ProposalRepository, CalendarConnectionRepository } from "@dawwen/db";
 import { HkdfKeyProvider, TokenEncryptor } from "@dawwen/shared";
+import { proposalUpdateMany } from "./helpers/proposal-store.js";
 
 describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
   let app: FastifyInstance;
@@ -26,15 +27,26 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
     user: {
       findUnique: vi.fn().mockImplementation(({ where }: { where: { id: string } }) => {
         if (where.id === aliceId) {
-          return Promise.resolve({ id: aliceId, email: "alice@dawwen.ai", name: "Alice", role: Role.OWNER });
+          return Promise.resolve({
+            id: aliceId,
+            email: "alice@dawwen.ai",
+            name: "Alice",
+            role: Role.OWNER,
+          });
         }
         if (where.id === bobId) {
-          return Promise.resolve({ id: bobId, email: "bob@dawwen.ai", name: "Bob", role: Role.OWNER });
+          return Promise.resolve({
+            id: bobId,
+            email: "bob@dawwen.ai",
+            name: "Bob",
+            role: Role.OWNER,
+          });
         }
         return Promise.resolve(null);
       }),
     },
     proposal: {
+      updateMany: vi.fn().mockImplementation(proposalUpdateMany(proposalsStore)),
       create: vi.fn().mockImplementation(({ data }: { data: any }) => {
         const id = `prop-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         const record: Proposal = {
@@ -56,33 +68,39 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
       findUnique: vi.fn().mockImplementation(({ where }: { where: { id: string } }) => {
         return Promise.resolve(proposalsStore.get(where.id) || null);
       }),
-      findMany: vi.fn().mockImplementation(({ where }: { where: { userId: string; status?: ProposalStatus } }) => {
-        const results = Array.from(proposalsStore.values()).filter((p) => {
-          if (p.userId !== where.userId) return false;
-          if (where.status && p.status !== where.status) return false;
-          return true;
-        });
-        return Promise.resolve(results);
-      }),
-      update: vi.fn().mockImplementation(({ where, data }: { where: { id: string }; data: any }) => {
-        const record = proposalsStore.get(where.id);
-        if (!record) throw new Error("Proposal not found");
-        const updated: Proposal = {
-          ...record,
-          ...data,
-          updatedAt: new Date(),
-        };
-        proposalsStore.set(where.id, updated);
-        return Promise.resolve(updated);
-      }),
+      findMany: vi
+        .fn()
+        .mockImplementation(({ where }: { where: { userId: string; status?: ProposalStatus } }) => {
+          const results = Array.from(proposalsStore.values()).filter((p) => {
+            if (p.userId !== where.userId) return false;
+            if (where.status && p.status !== where.status) return false;
+            return true;
+          });
+          return Promise.resolve(results);
+        }),
+      update: vi
+        .fn()
+        .mockImplementation(({ where, data }: { where: { id: string }; data: any }) => {
+          const record = proposalsStore.get(where.id);
+          if (!record) throw new Error("Proposal not found");
+          const updated: Proposal = {
+            ...record,
+            ...data,
+            updatedAt: new Date(),
+          };
+          proposalsStore.set(where.id, updated);
+          return Promise.resolve(updated);
+        }),
     },
     calendarConnection: {
-      findFirst: vi.fn().mockImplementation(({ where }: { where: { userId: string; provider: string } }) => {
-        const found = Array.from(connectionsStore.values()).find(
-          (c) => c.userId === where.userId && c.provider === where.provider,
-        );
-        return Promise.resolve(found || null);
-      }),
+      findFirst: vi
+        .fn()
+        .mockImplementation(({ where }: { where: { userId: string; provider: string } }) => {
+          const found = Array.from(connectionsStore.values()).find(
+            (c) => c.userId === where.userId && c.provider === where.provider,
+          );
+          return Promise.resolve(found || null);
+        }),
       findUnique: vi.fn().mockImplementation(({ where }: { where: { id: string } }) => {
         return Promise.resolve(connectionsStore.get(where.id) || null);
       }),
@@ -102,21 +120,25 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
         connectionsStore.set(id, record);
         return Promise.resolve(record);
       }),
-      update: vi.fn().mockImplementation(({ where, data }: { where: { id: string }; data: any }) => {
-        const record = connectionsStore.get(where.id);
-        if (!record) throw new Error("Connection not found");
-        const updated = { ...record, ...data, updatedAt: new Date() };
-        connectionsStore.set(where.id, updated);
-        return Promise.resolve(updated);
-      }),
-      deleteMany: vi.fn().mockImplementation(({ where }: { where: { userId: string; provider: string } }) => {
-        for (const [id, conn] of connectionsStore.entries()) {
-          if (conn.userId === where.userId && conn.provider === where.provider) {
-            connectionsStore.delete(id);
+      update: vi
+        .fn()
+        .mockImplementation(({ where, data }: { where: { id: string }; data: any }) => {
+          const record = connectionsStore.get(where.id);
+          if (!record) throw new Error("Connection not found");
+          const updated = { ...record, ...data, updatedAt: new Date() };
+          connectionsStore.set(where.id, updated);
+          return Promise.resolve(updated);
+        }),
+      deleteMany: vi
+        .fn()
+        .mockImplementation(({ where }: { where: { userId: string; provider: string } }) => {
+          for (const [id, conn] of connectionsStore.entries()) {
+            if (conn.userId === where.userId && conn.provider === where.provider) {
+              connectionsStore.delete(id);
+            }
           }
-        }
-        return Promise.resolve({ count: 1 });
-      }),
+          return Promise.resolve({ count: 1 });
+        }),
     },
     meeting: {
       findMany: vi.fn().mockResolvedValue([]),
@@ -128,7 +150,7 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
 
     const localAuth = new LocalAuthProvider(mockPrisma as unknown as PrismaClient, secret);
 
-    const aliceTokens = await localAuth.issueTokens({
+    const aliceTokens = await localAuth.issueAccessToken({
       id: aliceId,
       email: "alice@dawwen.ai",
       name: "Alice",
@@ -136,7 +158,7 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
     });
     aliceToken = aliceTokens.accessToken;
 
-    const bobTokens = await localAuth.issueTokens({
+    const bobTokens = await localAuth.issueAccessToken({
       id: bobId,
       email: "bob@dawwen.ai",
       name: "Bob",
@@ -211,9 +233,9 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
     });
 
     // Attempting to execute an already rejected proposal must throw ProposalNotApprovedError
-    await expect(
-      executor.approveAndExecute({ userId: aliceId }, rejectedId),
-    ).rejects.toThrow(ProposalNotApprovedError);
+    await expect(executor.approveAndExecute({ userId: aliceId }, rejectedId)).rejects.toThrow(
+      ProposalNotApprovedError,
+    );
   });
 
   it("Unauthenticated request to approve proposal is rejected with 401 Unauthorized", async () => {
@@ -256,9 +278,43 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
       },
     });
 
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(409);
     const body = res.json();
-    expect(body.error).toContain("must be approved by authenticated user first");
+    expect(body.message).toContain("must be approved by authenticated user first");
+  });
+
+  it("Concurrent approvals of the same proposal book the calendar exactly once", async () => {
+    const id = "prop-double-click";
+    proposalsStore.set(id, {
+      id,
+      userId: aliceId,
+      meetingId: null,
+      actionType: ProposalActionType.SCHEDULE_MEETING,
+      payload: { title: "Double click", proposedDatetime: "2026-12-01T10:00:00.000Z" },
+      status: ProposalStatus.PENDING_APPROVAL,
+      reason: null,
+      executedAt: null,
+      error: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const createEvent = vi.spyOn(fakeCalendar, "createEvent");
+    createEvent.mockClear();
+
+    const responses = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        app.inject({
+          method: "POST",
+          url: `/api/proposals/${id}/approve?execute=true`,
+          headers: { authorization: `Bearer ${aliceToken}` },
+        }),
+      ),
+    );
+
+    const codes = responses.map((r) => r.statusCode).sort();
+    expect(codes).toEqual([200, 409, 409, 409, 409]);
+    expect(createEvent).toHaveBeenCalledTimes(1);
+    expect(proposalsStore.get(id)?.status).toBe(ProposalStatus.EXECUTED);
   });
 
   it("Rejecting a proposal transitions status to REJECTED with reason and cannot be booked", async () => {
@@ -297,7 +353,7 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
       url: "/api/proposals/prop-ai-1/approve",
       headers: { authorization: `Bearer ${bobToken}` },
     });
-    expect(approveRes.statusCode).toBe(400);
+    expect(approveRes.statusCode).toBe(404);
 
     // Bob attempts to fetch Alice's proposal
     const getRes = await app.inject({
@@ -305,7 +361,7 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
       url: "/api/proposals/prop-ai-1",
       headers: { authorization: `Bearer ${bobToken}` },
     });
-    expect(getRes.statusCode).toBe(403);
+    expect(getRes.statusCode).toBe(404);
   });
 
   it("Calendar API: returns auth URL and allows connecting Google Calendar", async () => {
@@ -318,16 +374,16 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
     expect(authUrlRes.statusCode).toBe(200);
     expect(authUrlRes.json().authUrl).toContain("/api/calendar/callback");
 
-    // Connect via callback
+    // Google redirects the browser (no Bearer token) to GET /callback?code&state.
+    const authUrl = new URL(authUrlRes.json().authUrl, "http://localhost");
+    const state = authUrl.searchParams.get("state")!;
     const callbackRes = await app.inject({
-      method: "POST",
-      url: "/api/calendar/callback",
-      headers: { authorization: `Bearer ${aliceToken}` },
-      payload: { code: "demo_google_code" },
+      method: "GET",
+      url: `/api/calendar/callback?code=demo_google_code&state=${encodeURIComponent(state)}`,
     });
 
-    expect(callbackRes.statusCode).toBe(200);
-    expect(callbackRes.json().connected).toBe(true);
+    expect(callbackRes.statusCode).toBe(302);
+    expect(callbackRes.headers.location).toContain("calendar=connected");
 
     // Status shows connected
     const statusRes = await app.inject({
@@ -337,6 +393,20 @@ describe("Hard Invariant 1: Human-in-the-Loop & Calendar Proposals", () => {
     });
     expect(statusRes.statusCode).toBe(200);
     expect(statusRes.json().connected).toBe(true);
+  });
+
+  it("Calendar callback rejects a forged or tampered state (ADR-023)", async () => {
+    const forged = Buffer.from(
+      JSON.stringify({ userId: "victim", timestamp: Date.now() }),
+    ).toString("base64");
+    for (const state of [forged, "abc.def", ""]) {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/calendar/callback?code=x&state=${encodeURIComponent(state)}`,
+      });
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toContain("calendar=error");
+    }
   });
 
   it("Calendar API: lists unified events for the calendar view", async () => {

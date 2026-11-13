@@ -34,3 +34,15 @@ output "app_secret_arns" {
 output "ecs_cluster" {
   value = aws_ecs_cluster.main.name
 }
+
+output "migrate_command" {
+  description = "Applies Prisma migrations as a one-off task in the API image (run before each deploy, ADR-025)."
+  value = join(" ", [
+    "aws ecs run-task",
+    "--cluster ${aws_ecs_cluster.main.name}",
+    "--task-definition ${aws_ecs_task_definition.svc["api"].family}",
+    "--launch-type FARGATE",
+    "--network-configuration 'awsvpcConfiguration={subnets=[${join(",", aws_subnet.private[*].id)}],securityGroups=[${aws_security_group.ecs.id}],assignPublicIp=DISABLED}'",
+    "--overrides '{\"containerOverrides\":[{\"name\":\"api\",\"command\":[\"node\",\"packages/db/scripts/migrate-deploy.mjs\"]}]}'",
+  ])
+}

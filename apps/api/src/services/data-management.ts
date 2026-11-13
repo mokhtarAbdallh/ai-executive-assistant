@@ -35,7 +35,7 @@ export class DataManagementService {
     this.s3Client = options.s3Client;
     this.bucketName =
       options.bucketName ||
-      process.env.AUDIO_BUCKET_NAME ||
+      process.env.AUDIO_BUCKET ||
       "meeting-assistant-audio";
     this.log = options.logger ?? {
       info: () => {},

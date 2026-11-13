@@ -27,3 +27,26 @@ export interface LlmClient {
   readonly providerName: string;
   analyzeMeeting(context: TranscriptContext): Promise<LlmAnalysisResult>;
 }
+
+/** Text embedding contract used by semantic search (pgvector). */
+export interface EmbeddingClient {
+  readonly providerName: string;
+  /** Embeds a batch of texts; mirrors input order. */
+  embed(texts: readonly string[]): Promise<number[][]>;
+}
+
+/**
+ * Thrown when analysis ultimately fails. Carries the tokens already consumed so the
+ * caller can still meter the real cost (Invariant 7).
+ */
+export class LlmAnalysisFailedError extends Error {
+  constructor(
+    message: string,
+    public readonly inputTokens: number,
+    public readonly outputTokens: number,
+    public readonly modelName: string,
+  ) {
+    super(message);
+    this.name = "LlmAnalysisFailedError";
+  }
+}

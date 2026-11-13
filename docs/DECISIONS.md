@@ -172,3 +172,187 @@ visual language in both themes and both languages.
 - **No fabricated metrics:** the previous "×2.5 time saved" KPI was removed. Dashboard numbers
   are derived from real data (meetings, decisions, tasks, recorded duration) and the pending
   proposals badge comes from `fetchProposals()`.
+
+## ADR-017: Cognito auth, Google OAuth, and env contract hardening
+
+- `AUDIO_BUCKET` (not a display name) is the single bucket variable; the same S3Client is
+  injected into both upload routes and `DataManagementService` so signing and deletion hit the
+  same bucket.
+- `ASR_PROVIDER` accepts `qwencleo-http` alongside the SaaS providers. Credential rules are
+  centralized in `packages/config/src/env.ts`: `isHttpAsrProvider` (self-hosted, optional shared
+  key `ASR_HTTP_API_KEY`) vs `isKeyedAsrProvider` (requires `ASR_API_KEY`).
+- `AUTH_PROVIDER=cognito` must come with `COGNITO_USER_POOL_ID`; the local mock pool only exists
+  outside production.
+- Google OAuth redirect base is `PUBLIC_BASE_URL` (never the container-internal address).
+- The demo `/process-demo` endpoint and demo login are registered only when `NODE_ENV != production`
+  or `DEMO_MODE=true`; the seed password (`DawwenDemo2026!`) is shared with the demo login form.
+- `CORS_ORIGINS` is injected by ECS (per-environment origins), never hard-coded in the image.
+
+## ADR-018: QwenCleo HTTP adapter — chunked transcription for real timestamps
+
+- The official QwenCleo FastAPI server (`POST /v1/transcribe`) returns `{"text","language"` only —
+  no timestamps or diarization (verified from `server/app.py` upstream source).
+- Because Invariant 2 requires per-segment timestamps, the worker uses `transcribeChunked()`:
+  ffmpeg re-encodes the upload to 16 kHz mono WAV (stdin pipe), cuts ~20 s chunks
+  (`ASR_HTTP_OPTIONS.chunkSeconds`, no overlap in the MVP — upstream recommends 2 s overlap, a
+  possible later refinement), and synthesizes segment timestamps from chunk ranges. If ffmpeg is
+  unavailable the original bytes go through as one whole-file segment (transparent fallback).
+- Language hints map Egypt- dialect / code-switched meetings to `"Arabic"` (model-card
+  recommendation), English meetings to `"English"`.
+- The ElevenLabs SaaS adapter stays available in parallel for the ASR bake-off; a WER bake-off
+  on real Egyptian recordings decides the production ASR before GPU deployment.
+
+## ADR-019: Stuck-meeting sweeper
+
+- Message metadata (SQS visibility timeout / maxReceiveCount → DLQ) cannot settle a half-finished
+  pipeline: after retry exhaustion the message is dropped and the meeting row stays in
+  `TRANSCRIBING`/`ANALYZING` forever.
+- The worker runs an idempotent sweeper (`apps/worker/src/sweeper.ts`) that bulk-marks stale
+  meetings in those two statuses as `FAILED` with an explanatory `failureReason` once
+  `updatedAt` is older than `STUCK_MEETING_MINUTES`; interval is `STUCK_SWEEP_SECONDS`
+  (0 disables). DONE/FAILED rows are never touched.
+
+## ADR-020: Reminder dispatcher — booking-free, send-then-claim
+
+- Due `SCHEDULED` reminders are delivered **send-then-claim**: the email goes out first and only
+  then does a status-guarded `updateMany` (`WHERE status=SCHEDULED`) mark it `SENT`. Rationale: a
+  duplicated reminder (crash between send and claim) is an annoyance, while a silently dropped one
+  (claim-then-send semantics) is a missed meeting. A lost claim race (`count=0`) skips the
+  duplicate send in multi-replica deployments; in the single-replica worker it is a no-op.
+- Delivery channel: `EMAIL_FROM` configured → `SesEmailSender` (`@aws-sdk/client-sesv2`, Simple
+  content, UTF-8); otherwise the default console channel still marks reminders `SENT` so dispatch
+  works with zero SES permissions in dev. A failed send leaves the reminder `SCHEDULED` so the
+  next dispatch retries it.
+- **CloudWatch:** `alarms.tf` adds an SNS topic + `alarm_email` subscription; DLQ-oldest-age
+  (> 900 s) and audio-queue backlog alarms page when messages move to the DLQ (i.e. the sweeper
+  path was exercised).
+
+## ADR-021: Container runtime contract — bundle + generated Prisma client
+
+- tsup bundles all `@dawwen/*` workspace source into a single `dist/main.js`
+  (`noExternal: /^@dawwen\//`, `conditions=source`); npm dependencies stay external. The old
+  Dockerfiles copied only `packages/{config,shared}` — both images failed to build and run.
+  The images now copy `packages/{config,shared,db,asr,llm}`.
+- Runner stages install **prod-only** dependencies against the workspace manifests and then
+  generate the Prisma client from the copied `packages/db/prisma/schema.prisma`
+  (`pnpm --filter @dawwen/db exec prisma generate`). Consequently `prisma` became a **regular**
+  dependency of `@dawwen/db` (not dev) so the CLI exists in prod installs.
+- The bundled `BedrockLlmClient` resolves the analysis prompt relative to the bundle
+  (`dist` → `../prompts`), so `packages/llm/src/prompts` is copied to `apps/api/prompts` and
+  `apps/worker/prompts`.
+- Worker runtime image includes ffmpeg for the ADR-018 audio pre-processing.
+
+## ADR-022: Phase-1 hardening — exactly-once proposals, atomic credits, admin top-up, real web auth
+
+- **Proposals:** new `EXECUTING` status. Execution first claims the row with a conditional
+  `updateMany` (`APPROVED → EXECUTING`); only the single winner runs the side effect, then marks
+  `EXECUTED` or `FAILED`. Concurrent/duplicate approvals get **409**; cross-tenant ids get **404**.
+- **Credits:** reserve and settle are single conditional SQL statements (`credit.sql.ts`).
+  Reserve fails instead of over-committing; settle charges at most the available balance and
+  reports the shortfall (logged by the worker) — the balance never goes negative.
+  Reserve-before-processing in the worker is deferred to Phase 2.
+- **Top-up:** only users with `users.isPlatformAdmin` (re-read from the DB per request) may
+  credit an account, addressed by `userEmail`; capped at $100k per call. Grant with
+  `pnpm --filter @dawwen/db admin:grant <email> [--revoke]`. `/api/auth/me` exposes the flag so
+  the UI shows the admin form; regular users see transfer instructions only.
+- **Web auth:** real login/register screen; the access token is sent as Bearer and refreshed once
+  per 401 (shared in-flight) through the httpOnly refresh cookie; failed refresh → login screen.
+  Credential endpoints (login/register/refresh/logout) never trigger a refresh.
+- **Demo data** (auto-login + sample fallbacks) is served only when built with
+  `VITE_DEMO_MODE=true`; otherwise every API failure surfaces as an error. Playwright starts its
+  own demo dev server on port 5175.
+- **Tests:** real-Postgres concurrency tests (`*.db.test.ts`, gated by `TEST_DATABASE_URL`) run in
+  CI against a pgvector service after `prisma migrate deploy`.
+- Cognito stays off (local JWT auth) for now; server-side refresh-token revocation is Phase 2.
+
+## ADR-023: Phase-2 pipeline reliability, honest execution, OAuth and session revocation
+
+- **Claim-once processing:** the worker claims a meeting with `QUEUED → TRANSCRIBING` (conditional
+  update). Duplicate SQS deliveries and redrives of non-queued meetings are skipped and deleted.
+- **Credit hold:** after measuring the audio (ffprobe; 1-minute estimate when unknown, raised after
+  ASR) the worker reserves `price × minutes` before paying for ASR/LLM, records it in
+  `meetings.creditHoldMicros`, and settles it against the real cost (capped, ADR-022) at the end.
+  Failures release the hold without charging; the sweeper releases holds of crashed runs.
+- **Clean retries:** a run first deletes partial results of earlier attempts (segments, embeddings,
+  analysis, tasks, decisions, pending AI proposals, …). Analysis + children + proposal +
+  `REVIEW_PENDING` are written in one transaction. Any failure → `FAILED` + user-safe reason; audio
+  is kept. `POST /api/meetings/:id/retry` re-queues a FAILED meeting (conditional FAILED → QUEUED,
+  then SQS `SendMessage`; the API role gained `sqs:SendMessage`) and the UI shows a retry button.
+- **Metering:** `LlmAnalysisFailedError` carries the tokens of failed Bedrock attempts, which are
+  written as `LLM_ANALYSIS` usage with `failed: true` (Invariant 7).
+- **Privacy/audit:** raw-audio retention defaults to 0 days (Invariant 5); deleting a meeting keeps
+  its usage events (`usage_events.meetingId` FK `ON DELETE SET NULL`).
+- **Honest execution:** proposals are validated before approval — booking needs a real date and a
+  connected calendar, email a real recipient/body, a reminder its time, a task its meeting —
+  otherwise `422 proposal_incomplete | calendar_not_connected | email_not_configured` and the
+  proposal stays pending. No default dates/recipients. Simulated channels (fake calendar, console
+  email) only when `NODE_ENV !== production` or `DEMO_MODE=true`. Approving a reminder schedules it;
+  the worker dispatcher sends it when due.
+- **Google OAuth:** `state` is HMAC-signed (key derived from `APP_SECRET`), bound to the user and
+  valid for 10 minutes; `GET /api/calendar/callback` (no Bearer) verifies it, stores the encrypted
+  tokens and redirects to `/?calendar=connected|error`. The old authenticated POST callback (which
+  accepted an arbitrary `redirectUri`) is removed.
+- **Sessions:** refresh tokens are rows in `refresh_tokens` (jti). Each refresh rotates
+  (`replacedBy`), logout revokes, and reuse of a rotated token revokes all of the user's sessions —
+  except within 30 s when two tabs refresh with the same cookie.
+- API replies serialize `BigInt` as strings (global reply serializer).
+- Deferred: transient-error auto-retry in the worker (today: user/ops retry), a real email channel
+  in the API, Cognito.
+
+## ADR-024: Phase-3 quality — grounded citations, cleaner API, faster ASR, real assistant
+
+- **Citations are verified (Invariant 2):** Bedrock output that cites a `sourceSegmentId` not in
+  the transcript is sent back for repair; after the last attempt the worker strips unknown ids and
+  drops items left without a source (`enforceValidCitations`).
+- **One error handler:** another tenant's row and missing rows → `404 {error:"not_found"}` (never
+  500, never "forbidden"); `ZodError` → 400; Fastify client errors keep their status; anything else
+  → generic `500 {error:"internal_error"}` without the internal message. Query strings
+  (meetings, billing, calendar events, search) are parsed with Zod.
+- **Meetings pagination:** `GET /api/meetings?limit=1..100&cursor=…` is keyset-paginated on
+  `(createdAt desc, id desc)`; the body stays an array and the next cursor is in `x-next-cursor`.
+  The web list shows "show older meetings".
+- **ASR:** the worker streams the S3 object to a temp file, cuts 16 kHz WAV chunk files with
+  ffmpeg and passes their paths (no whole recording in memory). Chunks after the first start
+  `overlapSeconds` (default 2) early; the repeated words are removed at merge time
+  (`removeOverlapPrefix`, keeps the text when nothing matches). QwenCleo transcribes
+  `concurrency` (default 4) chunks at once and merges them in order. Both are
+  `ASR_HTTP_OPTIONS` keys (supersedes "no overlap" in ADR-018). Temp files are deleted after ASR.
+- **Assistant:** with `LLM_PROVIDER=bedrock` the Ask chat runs a Converse tool loop (≤ 6 rounds)
+  over `search_meetings`, `get_tasks`, `draft_message`, `create_reminder`, `propose_event`.
+  Action tools only create drafts / `PENDING_APPROVAL` proposals and never fill in a date or
+  recipient the user did not give (null + `needsReview`; approval is refused until set). Dates are
+  wall-clock in the user's `timezone` setting (default `Africa/Cairo`, DST-aware) and converted to
+  UTC. Each model call writes an `LLM_CHAT` usage event with its cost. Without a model the same
+  tools back a rule-based fallback for dev/demo.
+- Deferred: a balance gate for chat tokens, metering of query embeddings in search, speaker
+  diarization for the self-hosted ASR.
+
+## ADR-025: Phase-4 operations — runnable locally, deployable on ECS, measurable before pricing
+
+- **Database URL on ECS:** Terraform injects `DB_*` parts, not `DATABASE_URL`. API and worker pass
+  `config.databaseUrl` to `getPrismaClient(datasourceUrl)`; nothing creates a client at import time.
+  Migrations run as a one-off ECS task (`terraform output migrate_command`, script
+  `packages/db/scripts/migrate-deploy.mjs`, `sslmode=require` in prod, URL never printed).
+- **Presigned uploads:** S3 clients use `requestChecksumCalculation/responseChecksumValidation =
+WHEN_REQUIRED`; otherwise the SDK signs a CRC32 of an empty body and S3 rejects browser PUTs.
+- **Local stack:** compose ports are overridable (`DAWWEN_PG_PORT`, `DAWWEN_LOCALSTACK_PORT`);
+  the LocalStack init script is idempotent (bucket, CORS, queue + DLQ, S3→SQS on `uploads/`).
+- **Full-stack e2e:** `pnpm test:e2e:fullstack` drives login → upload with consent → processing →
+  approve all → approve a proposal against the real API, worker, Postgres and LocalStack (fake
+  ASR/LLM). It runs in CI as job `e2e`.
+- **Lost uploads:** meetings left `QUEUED` for 6 hours (upload interrupted, job lost) are marked
+  `FAILED` with an "upload it again" reason by the worker sweep.
+- **ASR bake-off:** `pnpm --filter @dawwen/worker bakeoff --dir <recordings>` runs each provider
+  through the production audio path and reports pooled WER/CER (after normalising Arabic spelling
+  variants, digits, punctuation), real-time factor and cost per audio hour. The report contains
+  transcripts and is git-ignored (`bakeoff-results/`). The ASR decision is made from it.
+- **Cost per minute:** `pnpm --filter @dawwen/worker cost-report --fixed-usd <bill>` divides metered
+  cost (usage_events) plus fixed AWS cost by billed audio minutes and shows revenue and margin.
+  `.env.example` Bedrock prices were 1000× too low and now match Terraform. The ElevenLabs price
+  differs between Terraform (183 333 µ$/min) and `.env.example` (3 667 µ$/min); the owner must set
+  the real plan price before go-live.
+- **Production Terraform:** WAF on the ALB (rate limit per IP + AWS common / bad-inputs /
+  IP-reputation rules; body-size rule counts only), SES identity + `ses:SendEmail` for the worker
+  when `email_from` is set (it had no permission before), alarms for API 5xx, unhealthy API
+  targets and Aurora capacity, optional monthly AWS budget. Backups were already 14 days with
+  deletion protection in prod. Go-live steps are in RUNBOOK §8.

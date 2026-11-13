@@ -5,6 +5,7 @@ import { LocalAuthProvider } from "../src/auth/local.provider.js";
 import { Role, ProposalActionType, ProposalStatus, ReminderStatus } from "@dawwen/db";
 import type { Proposal, PrismaClient, FollowUpDraft, Reminder, Meeting } from "@dawwen/db";
 import { FakeCalendarProvider } from "../src/services/calendar.js";
+import { proposalUpdateMany } from "./helpers/proposal-store.js";
 
 describe("Phase 5: Follow-up & Ask Chat Agent Invariants", () => {
   let app: FastifyInstance;
@@ -34,6 +35,7 @@ describe("Phase 5: Follow-up & Ask Chat Agent Invariants", () => {
     audioDurationSeconds: 1800,
     audioDeletedAt: null,
     failureReason: null,
+    creditHoldMicros: 0n,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
@@ -125,9 +127,7 @@ describe("Phase 5: Follow-up & Ask Chat Agent Invariants", () => {
     transcriptSegment: {
       findMany: vi.fn().mockImplementation(({ where }: any) => {
         const orClauses = where?.OR || [];
-        const terms = orClauses
-          .map((c: any) => c.text?.contains?.toLowerCase())
-          .filter(Boolean);
+        const terms = orClauses.map((c: any) => c.text?.contains?.toLowerCase()).filter(Boolean);
         return Promise.resolve(
           testSegments.filter((s) => {
             if (terms.length === 0) return true;
@@ -181,6 +181,7 @@ describe("Phase 5: Follow-up & Ask Chat Agent Invariants", () => {
       }),
     },
     proposal: {
+      updateMany: vi.fn().mockImplementation(proposalUpdateMany(proposalsStore)),
       create: vi.fn().mockImplementation(({ data }: any) => {
         const id = `prop-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         const record: Proposal = {
@@ -288,7 +289,7 @@ describe("Phase 5: Follow-up & Ask Chat Agent Invariants", () => {
   beforeAll(async () => {
     fakeCalendar = new FakeCalendarProvider();
     const localAuth = new LocalAuthProvider(mockPrisma as unknown as PrismaClient, secret);
-    const tokens = await localAuth.issueTokens({
+    const tokens = await localAuth.issueAccessToken({
       id: aliceId,
       email: "alice@dawwen.ai",
       name: "Alice",

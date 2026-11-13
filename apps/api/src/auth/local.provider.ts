@@ -1,8 +1,12 @@
-import { scryptSync, randomBytes, timingSafeEqual } from "node:crypto";
+import { scryptSync, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { SignJWT, jwtVerify } from "jose";
-import type { PrismaClient} from "@dawwen/db";
+import type { PrismaClient } from "@dawwen/db";
 import { Role } from "@dawwen/db";
 import type { AuthenticatedUser, AuthTokens, IAuthProvider } from "./types.js";
+
+const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** Two tabs may refresh with the same cookie at the same moment. */
+const REUSE_GRACE_MS = 30_000;
 
 export class LocalAuthProvider implements IAuthProvider {
   public readonly providerName = "local" as const;
@@ -30,7 +34,10 @@ export class LocalAuthProvider implements IAuthProvider {
     return timingSafeEqual(keyBuffer, derivedKey);
   }
 
-  async issueTokens(user: AuthenticatedUser): Promise<AuthTokens> {
+  /** Short-lived access token only (no session is created). */
+  async issueAccessToken(
+    user: AuthenticatedUser,
+  ): Promise<{ accessToken: string; expiresInSeconds: number }> {
     const accessToken = await new SignJWT({
       email: user.email,
       name: user.name,
@@ -43,23 +50,28 @@ export class LocalAuthProvider implements IAuthProvider {
       .setIssuedAt()
       .setExpirationTime("15m")
       .sign(this.secretKey);
+    return { accessToken, expiresInSeconds: 900 };
+  }
 
-    const refreshToken = await new SignJWT({
-      email: user.email,
-      type: "refresh",
-    })
+  /**
+   * Access token + a refresh token that is recorded server-side (ADR-023), so it
+   * can be rotated, revoked on logout and detected when reused.
+   */
+  async issueTokens(user: AuthenticatedUser, jti: string = randomUUID()): Promise<AuthTokens> {
+    const access = await this.issueAccessToken(user);
+    const expiresAt = new Date(Date.now() + REFRESH_TTL_MS);
+    await this.prisma.refreshToken.create({ data: { id: jti, userId: user.id, expiresAt } });
+
+    const refreshToken = await new SignJWT({ email: user.email, type: "refresh" })
       .setProtectedHeader({ alg: "HS256" })
       .setSubject(user.id)
+      .setJti(jti)
       .setIssuer(this.tokenIssuer)
       .setIssuedAt()
-      .setExpirationTime("7d")
+      .setExpirationTime(Math.floor(expiresAt.getTime() / 1000))
       .sign(this.secretKey);
 
-    return {
-      accessToken,
-      refreshToken,
-      expiresInSeconds: 900, // 15 mins
-    };
+    return { ...access, refreshToken };
   }
 
   async verifyAccessToken(token: string): Promise<AuthenticatedUser> {
@@ -83,7 +95,9 @@ export class LocalAuthProvider implements IAuthProvider {
     }
   }
 
-  async verifyRefreshToken(token: string): Promise<{ userId: string; email: string }> {
+  async verifyRefreshToken(
+    token: string,
+  ): Promise<{ userId: string; email: string; jti: string | undefined }> {
     try {
       const { payload } = await jwtVerify(token, this.secretKey, {
         issuer: this.tokenIssuer,
@@ -96,6 +110,7 @@ export class LocalAuthProvider implements IAuthProvider {
       return {
         userId: payload.sub,
         email: payload.email as string,
+        jti: payload.jti,
       };
     } catch {
       throw new Error("Unauthorized: Invalid or expired refresh token");
@@ -129,7 +144,7 @@ export class LocalAuthProvider implements IAuthProvider {
           create: {
             language: "ar",
             timezone: "Africa/Cairo",
-            audioRetentionDays: 7,
+            audioRetentionDays: 0,
           },
         },
         creditLedger: {
@@ -180,17 +195,70 @@ export class LocalAuthProvider implements IAuthProvider {
     return { user: authenticatedUser, tokens };
   }
 
+  /**
+   * Rotates a refresh token: the presented one is revoked and a new pair issued.
+   * Presenting an already-revoked token (outside a short grace window for two
+   * tabs refreshing at once) means it was copied, so every session of that user
+   * is revoked.
+   */
   async refresh(refreshToken: string): Promise<AuthTokens> {
     const claims = await this.verifyRefreshToken(refreshToken);
+    if (!claims.jti) throw new Error("Unauthorized: refresh token has no id");
+
+    const now = new Date();
+    const nextJti = randomUUID();
+    const rotated = await this.prisma.refreshToken.updateMany({
+      where: { id: claims.jti, userId: claims.userId, revokedAt: null, expiresAt: { gt: now } },
+      data: { revokedAt: now, replacedBy: nextJti },
+    });
+    if (rotated.count === 0 && !(await this.isConcurrentRotation(claims.jti, now))) {
+      const record = await this.prisma.refreshToken.findUnique({ where: { id: claims.jti } });
+      // A rotated token presented again (outside the grace window) was copied.
+      if (record?.replacedBy) await this.revokeAllSessions(claims.userId);
+      throw new Error("Unauthorized: refresh token revoked");
+    }
+
     const user = await this.prisma.user.findUnique({
       where: { id: claims.userId },
       select: { id: true, email: true, name: true, role: true },
     });
+    if (!user) throw new Error("User not found.");
+    return this.issueTokens(user, nextJti);
+  }
 
-    if (!user) {
-      throw new Error("User not found.");
+  /**
+   * True when the token was rotated moments ago and its successor is still live:
+   * another tab refreshed with the same cookie. Logout / revoke-all never qualify.
+   */
+  private async isConcurrentRotation(jti: string, now: Date): Promise<boolean> {
+    const record = await this.prisma.refreshToken.findUnique({ where: { id: jti } });
+    if (!record?.revokedAt || !record.replacedBy) return false;
+    if (now.getTime() - record.revokedAt.getTime() > REUSE_GRACE_MS) return false;
+    const successor = await this.prisma.refreshToken.findUnique({
+      where: { id: record.replacedBy },
+    });
+    // The successor may not be written yet when both requests arrive together.
+    return !successor || !successor.revokedAt || Boolean(successor.replacedBy);
+  }
+
+  /** Logout: revokes the given refresh token. Never throws (logout must always succeed). */
+  async revokeRefreshToken(refreshToken: string): Promise<void> {
+    try {
+      const claims = await this.verifyRefreshToken(refreshToken);
+      if (!claims.jti) return;
+      await this.prisma.refreshToken.updateMany({
+        where: { id: claims.jti, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+    } catch {
+      // Invalid/expired token: nothing to revoke.
     }
+  }
 
-    return this.issueTokens(user);
+  async revokeAllSessions(userId: string): Promise<void> {
+    await this.prisma.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
   }
 }

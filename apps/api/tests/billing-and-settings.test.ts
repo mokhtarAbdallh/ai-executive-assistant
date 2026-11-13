@@ -15,9 +15,6 @@ import {
 import { DataManagementService } from "../src/services/data-management.js";
 import { ManualPaymentAdapter } from "../src/services/payment.js";
 import { CreditRepository, MeetingRepository } from "@dawwen/db";
-import { processMeetingAudio } from "../../worker/src/pipeline.js";
-import { FakeSpeechToText } from "@dawwen/asr";
-import { FakeLlmClient } from "@dawwen/llm";
 
 describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", () => {
   let app: FastifyInstance;
@@ -26,6 +23,8 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
 
   const aliceId = "usr-alice-phase6";
   const bobId = "usr-bob-phase6";
+  const adminId = "usr-admin-phase6";
+  let adminToken: string;
   const aliceMeetingId = "mtg-alice-phase6-001";
   const bobMeetingId = "mtg-bob-phase6-001";
   const secret = "test-jwt-secret-at-least-32-chars-long!";
@@ -64,6 +63,7 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
       audioDurationSeconds: 600,
       audioDeletedAt: null,
       failureReason: null,
+      creditHoldMicros: 0n,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -83,6 +83,7 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
       audioDurationSeconds: null,
       audioDeletedAt: null,
       failureReason: null,
+      creditHoldMicros: 0n,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -123,31 +124,48 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
 
     const mockPrisma = {
       user: {
-        findUnique: vi.fn().mockImplementation(({ where }: { where: { id: string } }) => {
-          if (where.id === aliceId) {
-            return Promise.resolve({
-              id: aliceId,
-              email: "alice@example.com",
-              name: "Alice Founder",
-              role: Role.OWNER,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-              meetings: [aliceMeeting],
-            });
-          }
-          if (where.id === bobId) {
-            return Promise.resolve({
-              id: bobId,
-              email: "bob@example.com",
-              name: "Bob Client",
-              role: Role.OWNER,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-              meetings: [bobMeeting],
-            });
-          }
-          return Promise.resolve(null);
-        }),
+        findUnique: vi
+          .fn()
+          .mockImplementation(({ where }: { where: { id?: string; email?: string } }) => {
+            if (where.email !== undefined) {
+              const byEmail: Record<string, string> = {
+                "alice@example.com": aliceId,
+                "bob@example.com": bobId,
+              };
+              const id = byEmail[where.email];
+              return Promise.resolve(id ? { id, email: where.email } : null);
+            }
+            if (where.id === adminId) {
+              return Promise.resolve({
+                id: adminId,
+                email: "ops@dawwen.ai",
+                isPlatformAdmin: true,
+              });
+            }
+            if (where.id === aliceId) {
+              return Promise.resolve({
+                id: aliceId,
+                email: "alice@example.com",
+                name: "Alice Founder",
+                role: Role.OWNER,
+                createdAt: new Date(),
+                updatedAt: new Date(),
+                meetings: [aliceMeeting],
+              });
+            }
+            if (where.id === bobId) {
+              return Promise.resolve({
+                id: bobId,
+                email: "bob@example.com",
+                name: "Bob Client",
+                role: Role.OWNER,
+                createdAt: new Date(),
+                updatedAt: new Date(),
+                meetings: [bobMeeting],
+              });
+            }
+            return Promise.resolve(null);
+          }),
         delete: vi.fn().mockImplementation(({ where }: { where: { id: string } }) => {
           return Promise.resolve({ id: where.id });
         }),
@@ -186,13 +204,15 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
           meetingsStore.set(item.id, item);
           return Promise.resolve(item);
         }),
-        update: vi.fn().mockImplementation(({ where, data }: { where: { id: string }; data: any }) => {
-          const existing = meetingsStore.get(where.id);
-          if (!existing) throw new Error("Not found");
-          const updated = { ...existing, ...data };
-          meetingsStore.set(where.id, updated);
-          return Promise.resolve(updated);
-        }),
+        update: vi
+          .fn()
+          .mockImplementation(({ where, data }: { where: { id: string }; data: any }) => {
+            const existing = meetingsStore.get(where.id);
+            if (!existing) throw new Error("Not found");
+            const updated = { ...existing, ...data };
+            meetingsStore.set(where.id, updated);
+            return Promise.resolve(updated);
+          }),
         delete: vi.fn().mockImplementation(({ where }: { where: { id: string } }) => {
           const existing = meetingsStore.get(where.id);
           meetingsStore.delete(where.id);
@@ -277,9 +297,7 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
           return Promise.resolve(item);
         }),
         findMany: vi.fn().mockImplementation(({ where }: { where: { userId: string } }) => {
-          return Promise.resolve(
-            transactionsStore.filter((t) => t.userId === where.userId),
-          );
+          return Promise.resolve(transactionsStore.filter((t) => t.userId === where.userId));
         }),
       },
       usageEvent: {
@@ -289,9 +307,7 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
           return Promise.resolve(item);
         }),
         findMany: vi.fn().mockImplementation(({ where }: { where: { userId: string } }) => {
-          return Promise.resolve(
-            usageEventsStore.filter((ev) => ev.userId === where.userId),
-          );
+          return Promise.resolve(usageEventsStore.filter((ev) => ev.userId === where.userId));
         }),
       },
       meetingEmbedding: {
@@ -346,7 +362,7 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
     } as unknown as PrismaClient;
 
     const auth = new LocalAuthProvider(mockPrisma, secret);
-    const aliceTokens = await auth.issueTokens({
+    const aliceTokens = await auth.issueAccessToken({
       id: aliceId,
       email: "alice@example.com",
       name: "Alice Founder",
@@ -354,13 +370,22 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
     });
     aliceToken = aliceTokens.accessToken;
 
-    const bobTokens = await auth.issueTokens({
+    const bobTokens = await auth.issueAccessToken({
       id: bobId,
       email: "bob@example.com",
       name: "Bob Client",
       role: Role.OWNER,
     });
     bobToken = bobTokens.accessToken;
+
+    adminToken = (
+      await auth.issueAccessToken({
+        id: adminId,
+        email: "ops@dawwen.ai",
+        name: "Ops",
+        role: Role.OWNER,
+      })
+    ).accessToken;
 
     const creditRepo = new CreditRepository(mockPrisma);
     const meetingRepo = new MeetingRepository(mockPrisma);
@@ -411,80 +436,31 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
       expect(body.error).toBe("Insufficient credit balance");
       expect(body.message).toContain("positive credit balance");
     });
-
-    it("worker pipeline fails meeting processing with clear reason when balance is 0", async () => {
-      const mockPrisma = (app as any).prisma || {
-        meeting: {
-          findUnique: vi.fn().mockResolvedValue({
-            id: aliceMeetingId,
-            userId: aliceId,
-            title: "Test Meeting",
-            status: MeetingStatus.QUEUED,
-          }),
-          update: vi.fn().mockResolvedValue({}),
-        },
-        creditLedger: {
-          findUnique: vi.fn().mockResolvedValue({
-            userId: aliceId,
-            balanceMicros: 0n,
-            reservedMicros: 0n,
-          }),
-        },
-        recordingConsent: {
-          findFirst: vi.fn().mockResolvedValue({ id: "consent-1", userId: aliceId }),
-        },
-      };
-
-      await expect(
-        processMeetingAudio(
-          {
-            prisma: mockPrisma as any,
-            s3Client: mockS3Client,
-            asrClient: new FakeSpeechToText(),
-            llmClient: new FakeLlmClient(),
-            pricingConfig: {
-              customerPricePerAudioMinuteMicros: 20000,
-              providerCosts: {
-                asrPerAudioMinuteMicros: {},
-                llmPerMillionInputTokensMicros: {},
-                llmPerMillionOutputTokensMicros: {},
-                embeddingsPerMillionTokensMicros: {},
-              },
-              lowBalanceThresholdMicros: 100000,
-            },
-            asrProviderName: "fake",
-            llmProviderName: "fake",
-          },
-          {
-            meetingId: aliceMeetingId,
-            userId: aliceId,
-            s3Bucket: "test-audio-bucket",
-            s3Key: "uploads/test.mp3",
-          },
-        ),
-      ).rejects.toThrow(/Balance gate/);
-
-      expect(mockPrisma.meeting.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            status: MeetingStatus.FAILED,
-            failureReason: expect.stringContaining("Balance gate: insufficient credit balance"),
-          }),
-        }),
-      );
-    });
   });
 
   // ==========================================
   // 2. PaymentProvider & Credit Top-up
   // ==========================================
   describe("PaymentProvider (Manual Adapter) & Credit Top-up", () => {
-    it("tops up credit balance via POST /api/billing/topup", async () => {
+    it("forbids a regular user from crediting their own balance (403)", async () => {
       const res = await app.inject({
         method: "POST",
         url: "/api/billing/topup",
         headers: { authorization: `Bearer ${aliceToken}` },
+        payload: { userEmail: "alice@example.com", amountDollars: 1_000_000 },
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(ledgersStore.get(aliceId)?.balanceMicros ?? 0n).toBe(0n);
+    });
+
+    it("lets a platform admin credit a user by email via POST /api/billing/topup", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/billing/topup",
+        headers: { authorization: `Bearer ${adminToken}` },
         payload: {
+          userEmail: "Alice@Example.com",
           amountDollars: 10.0, // $10 = 10,000,000 micros
           reference: "VOUCHER-DEPI-2026",
           description: "Manual voucher credit deposit",
@@ -498,6 +474,30 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
       expect(body.transaction.newBalanceMicros).toBe("10000000");
       expect(body.transaction.formattedNewBalance).toBe("$10.00");
       expect(body.transaction.reference).toBe("VOUCHER-DEPI-2026");
+      expect(ledgersStore.get(aliceId)?.balanceMicros).toBe(10_000_000n);
+    });
+
+    it("returns 404 when the admin targets an unknown email", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/billing/topup",
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: { userEmail: "nobody@example.com", amountDollars: 5 },
+      });
+
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects malformed micro amounts with 400 instead of crashing", async () => {
+      for (const amountMicros of ["abc", "1.5", "-10"]) {
+        const res = await app.inject({
+          method: "POST",
+          url: "/api/billing/topup",
+          headers: { authorization: `Bearer ${adminToken}` },
+          payload: { userEmail: "alice@example.com", amountMicros },
+        });
+        expect(res.statusCode).toBe(400);
+      }
     });
 
     it("allows upload after topping up credits", async () => {
@@ -523,8 +523,9 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
       const res = await app.inject({
         method: "POST",
         url: "/api/billing/topup",
-        headers: { authorization: `Bearer ${aliceToken}` },
+        headers: { authorization: `Bearer ${adminToken}` },
         payload: {
+          userEmail: "alice@example.com",
           amountDollars: -5.0,
         },
       });
@@ -709,6 +710,7 @@ describe("Phase 6: Billing, Usage, Balance Gating, and Data Deletion / Export", 
         audioDurationSeconds: 100,
         audioDeletedAt: null,
         failureReason: null,
+        creditHoldMicros: 0n,
         createdAt: new Date(),
         updatedAt: new Date(),
       });

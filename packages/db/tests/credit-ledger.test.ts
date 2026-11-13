@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
-import { CreditRepository, InsufficientBalanceError } from "../src/repositories/credit.repository.js";
+import {
+  CreditRepository,
+  InsufficientBalanceError,
+} from "../src/repositories/credit.repository.js";
 
 describe("Credit Ledger (Usage & Balance Invariant)", () => {
   const context = { userId: "user-test-credit-1" };
@@ -25,13 +28,17 @@ describe("Credit Ledger (Usage & Balance Invariant)", () => {
   });
 
   it("rejects reservation if requested credits exceed available balance", async () => {
+    const ledger = {
+      userId: context.userId,
+      balanceMicros: 1_000_000n,
+      reservedMicros: 800_000n, // available = 200,000n
+    };
     const mockTx = {
+      // The conditional UPDATE matches no row when available < requested.
+      $executeRaw: vi.fn().mockResolvedValue(0),
       creditLedger: {
-        upsert: vi.fn().mockResolvedValue({
-          userId: context.userId,
-          balanceMicros: 1_000_000n,
-          reservedMicros: 800_000n, // available = 200,000n
-        }),
+        upsert: vi.fn().mockResolvedValue(ledger),
+        findUniqueOrThrow: vi.fn().mockResolvedValue(ledger),
         update: vi.fn(),
       },
       creditTransaction: {

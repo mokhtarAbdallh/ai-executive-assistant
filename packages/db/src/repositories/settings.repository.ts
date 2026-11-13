@@ -11,7 +11,7 @@ export class SettingsRepository {
         userId: context.userId,
         language: "ar",
         timezone: "Africa/Cairo",
-        audioRetentionDays: 7,
+        audioRetentionDays: 0,
       },
       update: {},
     });
@@ -31,7 +31,7 @@ export class SettingsRepository {
         userId: context.userId,
         language: updates.language ?? "ar",
         timezone: updates.timezone ?? "Africa/Cairo",
-        audioRetentionDays: updates.audioRetentionDays ?? 7,
+        audioRetentionDays: updates.audioRetentionDays ?? 0,
       },
       update: {
         ...(updates.language ? { language: updates.language } : {}),

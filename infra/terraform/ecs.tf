@@ -59,10 +59,13 @@ locals {
     { name = "EMBEDDING_DIM", value = tostring(var.embedding_dim) },
     { name = "AUTH_PROVIDER", value = var.auth_provider },
     { name = "ASR_PROVIDER", value = var.asr_provider },
+    { name = "ASR_HTTP_URL", value = var.asr_http_url },
     { name = "LLM_PROVIDER", value = var.llm_provider },
     { name = "DEMO_MODE", value = tostring(var.demo_mode) },
     { name = "PUBLIC_BASE_URL", value = var.public_base_url },
     { name = "PRICING_CONFIG", value = var.pricing_config },
+    { name = "EMAIL_FROM", value = var.email_from },
+    { name = "CORS_ORIGINS", value = join(",", var.cors_origins) },
   ]
 
   secret_db_password = {
@@ -80,6 +83,10 @@ locals {
   secret_asr = {
     name      = "ASR_API_KEY"
     valueFrom = aws_secretsmanager_secret.app["asr_api_key"].arn
+  }
+  secret_asr_http = {
+    name      = "ASR_HTTP_API_KEY"
+    valueFrom = aws_secretsmanager_secret.app["asr_http_api_key"].arn
   }
 
   svc = {
@@ -102,7 +109,10 @@ locals {
       memory      = var.worker_memory
       port        = 0
       environment = concat(local.common_env, [{ name = "NODE_ENV", value = "production" }])
-      secrets     = [local.secret_db_password, local.secret_app, local.secret_asr]
+      # ASR_HTTP_API_KEY is only injected when set (shared-key deployments; no empty secret reads).
+      secrets = (((var.asr_provider == "qwencleo-http" || var.asr_provider == "whisper-http") && var.asr_http_api_key != "")
+        ? [local.secret_db_password, local.secret_app, local.secret_asr_http]
+      : [local.secret_db_password, local.secret_app, local.secret_asr])
     }
   }
 }

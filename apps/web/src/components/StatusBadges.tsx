@@ -29,6 +29,7 @@ const TASK_TONE: Record<TaskStatus, BadgeTone> = {
 const PROPOSAL_TONE: Record<Proposal["status"], BadgeTone> = {
   PENDING_APPROVAL: "warning",
   APPROVED: "brand",
+  EXECUTING: "info",
   EXECUTED: "success",
   REJECTED: "neutral",
   FAILED: "danger",

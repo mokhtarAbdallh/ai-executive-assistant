@@ -10,13 +10,15 @@ import { AskChat } from "./components/AskChat";
 import { SearchModal } from "./components/SearchModal";
 import { BillingView } from "./components/BillingView";
 import { SettingsView } from "./components/SettingsView";
-import { Skeleton, ToastProvider, useToast } from "./components/ui";
+import { Skeleton, Spinner, ToastProvider, useToast } from "./components/ui";
+import { AuthScreen } from "./components/AuthScreen";
+import { AuthProvider, useAuth } from "./auth/AuthContext";
 import {
   createMeeting,
   deleteMeeting,
   fetchHealth,
   fetchMeetingDetail,
-  fetchMeetings,
+  fetchMeetingsPage,
   fetchProposals,
   processDemoMeeting,
 } from "./api";
@@ -29,22 +31,60 @@ type View = AppView | "detail";
 export function App() {
   return (
     <ToastProvider>
-      <AppContent />
+      <AuthProvider>
+        <AuthGate />
+      </AuthProvider>
     </ToastProvider>
   );
 }
 
-function AppContent() {
+/** Real login is required unless the build is the offline demo (VITE_DEMO_MODE). */
+function AuthGate() {
+  const { t } = useTranslation();
+  const { status, user, logout } = useAuth();
+
+  if (status === "loading") {
+    return (
+      <main className="flex min-h-dvh items-center justify-center gap-3 bg-app text-sm text-fg-muted">
+        <Spinner />
+        <span>{t("auth.loading")}</span>
+      </main>
+    );
+  }
+  if (status === "anonymous" || !user) return <AuthScreen />;
+  return (
+    <AppContent
+      userName={user.name || user.email}
+      isAdmin={Boolean(user.isPlatformAdmin)}
+      onLogout={() => void logout()}
+    />
+  );
+}
+
+function AppContent({
+  userName,
+  isAdmin,
+  onLogout,
+}: {
+  userName: string;
+  isAdmin: boolean;
+  onLogout: () => void;
+}) {
   const { t, i18n } = useTranslation();
   const { toast } = useToast();
   const { theme, toggleTheme } = useTheme();
 
-  const [view, setView] = useState<View>("meetings");
+  // Returning from Google's consent screen lands on /?calendar=... (ADR-023).
+  const [view, setView] = useState<View>(() =>
+    new URLSearchParams(window.location.search).has("calendar") ? "calendar" : "meetings",
+  );
   const [meetingTab, setMeetingTab] = useState<MeetingTab>("summary");
   const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
   const [pendingProposalsCount, setPendingProposalsCount] = useState(0);
 
   const [meetings, setMeetings] = useState<MeetingSummary[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [activeMeetingDetail, setActiveMeetingDetail] = useState<MeetingDetailType | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -63,13 +103,32 @@ function AppContent() {
     setIsLoading(true);
     setError(null);
     try {
-      setMeetings(await fetchMeetings());
+      const page = await fetchMeetingsPage();
+      setMeetings(page.items);
+      setNextCursor(page.nextCursor);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t("errors.generic"));
     } finally {
       setIsLoading(false);
     }
   }, [t]);
+
+  const loadMoreMeetings = useCallback(async () => {
+    if (!nextCursor) return;
+    setLoadingMore(true);
+    try {
+      const page = await fetchMeetingsPage(nextCursor);
+      setMeetings((current) => {
+        const seen = new Set(current.map((m) => m.id));
+        return [...current, ...page.items.filter((m) => !seen.has(m.id))];
+      });
+      setNextCursor(page.nextCursor);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : t("errors.generic"));
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [nextCursor, t]);
 
   const loadPendingProposals = useCallback(async () => {
     try {
@@ -189,6 +248,8 @@ function AppContent() {
       onOpenSearch={() => setSearchOpen(true)}
       onToggleTheme={toggleTheme}
       onChangeLanguage={(next) => setLanguage(next)}
+      userName={userName}
+      onLogout={onLogout}
     >
       <div key={view} className="animate-page">
         {view === "detail" ? (
@@ -253,7 +314,7 @@ function AppContent() {
             />
           </div>
         ) : view === "billing" ? (
-          <BillingView />
+          <BillingView isAdmin={isAdmin} />
         ) : view === "settings" ? (
           <SettingsView />
         ) : (
@@ -267,6 +328,9 @@ function AppContent() {
             onNewMeetingClick={handleNewMeetingClick}
             onLoadDemoClick={handleLoadDemo}
             onRetry={loadMeetings}
+            hasMore={nextCursor !== null}
+            loadingMore={loadingMore}
+            onLoadMore={() => void loadMoreMeetings()}
             onOpenProposals={() => setView("proposals")}
           />
         )}
