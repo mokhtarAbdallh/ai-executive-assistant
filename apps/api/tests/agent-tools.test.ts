@@ -41,7 +41,7 @@ describe("Ask assistant with a tool-using model", () => {
   };
   const prisma = {
     userSettings: { findUnique: vi.fn(async () => ({ timezone: "Africa/Cairo" })) },
-    usageEvent: { create: vi.fn(async ({ data }: { data: object }) => usage.push(data)) },
+    usageEvent: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => usage.push(data)) },
   } as unknown as PrismaClient;
 
   /** Model that plays back a script of turns and records what it was sent. */

@@ -298,3 +298,31 @@ visual language in both themes and both languages.
 - API replies serialize `BigInt` as strings (global reply serializer).
 - Deferred: transient-error auto-retry in the worker (today: user/ops retry), a real email channel
   in the API, Cognito.
+
+## ADR-024: Phase-3 quality — grounded citations, cleaner API, faster ASR, real assistant
+
+- **Citations are verified (Invariant 2):** Bedrock output that cites a `sourceSegmentId` not in
+  the transcript is sent back for repair; after the last attempt the worker strips unknown ids and
+  drops items left without a source (`enforceValidCitations`).
+- **One error handler:** another tenant's row and missing rows → `404 {error:"not_found"}` (never
+  500, never "forbidden"); `ZodError` → 400; Fastify client errors keep their status; anything else
+  → generic `500 {error:"internal_error"}` without the internal message. Query strings
+  (meetings, billing, calendar events, search) are parsed with Zod.
+- **Meetings pagination:** `GET /api/meetings?limit=1..100&cursor=…` is keyset-paginated on
+  `(createdAt desc, id desc)`; the body stays an array and the next cursor is in `x-next-cursor`.
+  The web list shows "show older meetings".
+- **ASR:** the worker streams the S3 object to a temp file, cuts 16 kHz WAV chunk files with
+  ffmpeg and passes their paths (no whole recording in memory). Chunks after the first start
+  `overlapSeconds` (default 2) early; the repeated words are removed at merge time
+  (`removeOverlapPrefix`, keeps the text when nothing matches). QwenCleo transcribes
+  `concurrency` (default 4) chunks at once and merges them in order. Both are
+  `ASR_HTTP_OPTIONS` keys (supersedes "no overlap" in ADR-018). Temp files are deleted after ASR.
+- **Assistant:** with `LLM_PROVIDER=bedrock` the Ask chat runs a Converse tool loop (≤ 6 rounds)
+  over `search_meetings`, `get_tasks`, `draft_message`, `create_reminder`, `propose_event`.
+  Action tools only create drafts / `PENDING_APPROVAL` proposals and never fill in a date or
+  recipient the user did not give (null + `needsReview`; approval is refused until set). Dates are
+  wall-clock in the user's `timezone` setting (default `Africa/Cairo`, DST-aware) and converted to
+  UTC. Each model call writes an `LLM_CHAT` usage event with its cost. Without a model the same
+  tools back a rule-based fallback for dev/demo.
+- Deferred: a balance gate for chat tokens, metering of query embeddings in search, speaker
+  diarization for the self-hosted ASR.
