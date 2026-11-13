@@ -218,6 +218,35 @@ describe("Worker Pipeline (@dawwen/worker)", () => {
     }
   });
 
+  it("Invariant 2: citations of segments that do not exist never reach the database", async () => {
+    const fake = new FakeLlmClient();
+    pipelineDeps.llmClient = {
+      providerName: "fake",
+      analyzeMeeting: async (ctx) => {
+        const result = await fake.analyzeMeeting(ctx);
+        const [first, ...rest] = result.analysis.decisions;
+        result.analysis.decisions = [
+          { ...first!, sourceSegmentIds: [...first!.sourceSegmentIds, "invented-seg"] },
+          ...rest,
+        ];
+        result.analysis.actionItems = [
+          { ...result.analysis.actionItems[0]!, sourceSegmentIds: ["ghost-only"] },
+        ];
+        return result;
+      },
+    };
+
+    const result = await processMeetingAudio(pipelineDeps, params);
+
+    const realIds = new Set(db.tables.transcriptSegment!.map((s) => s.id));
+    for (const table of ["decision", "task", "topicDiscussion"]) {
+      for (const row of db.tables[table]!) {
+        for (const id of row.sourceSegmentIds as string[]) expect(realIds.has(id)).toBe(true);
+      }
+    }
+    expect(result.tasksCount).toBe(0); // the only task cited nothing real
+  });
+
   it("Hard Invariant 3: unassigned tasks (missing owner or date) have needsReview: true", async () => {
     await processMeetingAudio(pipelineDeps, params);
 

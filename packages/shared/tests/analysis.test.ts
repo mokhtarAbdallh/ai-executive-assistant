@@ -8,7 +8,12 @@ function validAnalysis(): MeetingAnalysis {
     purpose: "مراجعة خطة الإطلاق",
     agenda: ["الـ roadmap"],
     topics: [
-      { title: "Launch", summary: "مناقشة ميعاد الإطلاق", sourceTs: "01:10", sourceSegmentIds: ["s1"] },
+      {
+        title: "Launch",
+        summary: "مناقشة ميعاد الإطلاق",
+        sourceTs: "01:10",
+        sourceSegmentIds: ["s1"],
+      },
     ],
     decisions: [
       {
@@ -95,5 +100,38 @@ describe("MeetingAnalysisSchema", () => {
   it("rejects unknown keys (strict contract)", () => {
     const a = { ...validAnalysis(), extra: true };
     expect(MeetingAnalysisSchema.safeParse(a).success).toBe(false);
+  });
+});
+
+describe("citation checks (Invariant 2, ADR-024)", () => {
+  const real = new Set(["s1", "s2", "s3", "s4"]);
+
+  it("accepts an analysis whose every citation exists", async () => {
+    const { findInvalidCitations } = await import("../src/index.js");
+    expect(findInvalidCitations(validAnalysis(), real)).toEqual([]);
+  });
+
+  it("reports invented segment ids per item", async () => {
+    const { findInvalidCitations } = await import("../src/index.js");
+    const a = validAnalysis();
+    a.decisions[0]!.sourceSegmentIds = ["s2", "seg-999"];
+    expect(findInvalidCitations(a, real)).toEqual([
+      "decisions[0].sourceSegmentIds contains ids that are not in the transcript: seg-999",
+    ]);
+  });
+
+  it("strips unknown ids and drops items left with no real source", async () => {
+    const { enforceValidCitations } = await import("../src/index.js");
+    const a = validAnalysis();
+    a.decisions[0]!.sourceSegmentIds = ["s2", "ghost"];
+    a.actionItems[0]!.sourceSegmentIds = ["ghost-1", "ghost-2"];
+
+    const result = enforceValidCitations(a, real);
+
+    expect(result.analysis.decisions[0]!.sourceSegmentIds).toEqual(["s2"]);
+    expect(result.analysis.actionItems).toHaveLength(0);
+    expect(result.removedIds).toBe(1);
+    expect(result.droppedItems).toBe(1);
+    expect(a.decisions[0]!.sourceSegmentIds).toEqual(["s2", "ghost"]); // input untouched
   });
 });

@@ -3,7 +3,7 @@ import {
   ConverseCommand,
   type Message,
 } from "@aws-sdk/client-bedrock-runtime";
-import { MeetingAnalysisSchema, type MeetingAnalysis } from "@dawwen/shared";
+import { MeetingAnalysisSchema, findInvalidCitations, type MeetingAnalysis } from "@dawwen/shared";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -95,6 +95,9 @@ Extract the complete meeting analysis strictly matching the requested JSON schem
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
     let lastError = "";
+    const validSegmentIds = new Set(context.segments.map((s) => s.id));
+    /** Schema-valid output whose only problem is citations (the worker strips those). */
+    let lastSchemaValid: MeetingAnalysis | null = null;
 
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       const command = new ConverseCommand({
@@ -130,6 +133,15 @@ Extract the complete meeting analysis strictly matching the requested JSON schem
         const parsedJson = JSON.parse(cleanedJson);
         const analysis: MeetingAnalysis = MeetingAnalysisSchema.parse(parsedJson);
 
+        // Invariant 2 (ADR-024): every cited segment id must exist in this transcript.
+        const citationProblems = findInvalidCitations(analysis, validSegmentIds);
+        if (citationProblems.length > 0) {
+          lastSchemaValid = analysis;
+          throw new Error(
+            `Citations must use only the segment ids given in <transcript>:\n${citationProblems.join("\n")}`,
+          );
+        }
+
         return {
           analysis,
           inputTokens: totalInputTokens,
@@ -153,6 +165,17 @@ Extract the complete meeting analysis strictly matching the requested JSON schem
           ],
         });
       }
+    }
+
+    if (lastSchemaValid) {
+      // Out of repair attempts but the structure is valid: return it and let the
+      // caller drop the invented citations (enforceValidCitations).
+      return {
+        analysis: lastSchemaValid,
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
+        modelName: this.modelId,
+      };
     }
 
     throw new LlmAnalysisFailedError(

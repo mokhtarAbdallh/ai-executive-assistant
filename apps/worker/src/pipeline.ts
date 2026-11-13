@@ -13,6 +13,7 @@ import type { SpeechToText, TranscribeOptions, TranscriptChunk } from "@dawwen/a
 import { standardizeArabicTerms } from "@dawwen/asr";
 import type { LlmClient, TranscriptContext, EmbeddingClient } from "@dawwen/llm";
 import { LlmAnalysisFailedError } from "@dawwen/llm";
+import { enforceValidCitations } from "@dawwen/shared";
 import type { PricingConfig } from "@dawwen/config";
 
 type Log = {
@@ -394,10 +395,23 @@ async function runClaimedPipeline(
 
   // Persist the whole analysis atomically; the meeting becomes REVIEW_PENDING
   // in the same transaction, so a crash never leaves half an analysis behind.
+  // Invariant 2 (ADR-024): only citations of segments that really exist are kept.
+  const citations = enforceValidCitations(
+    llmResult.analysis,
+    new Set(createdSegments.map((s) => s.id)),
+  );
+  if (citations.removedIds > 0 || citations.droppedItems > 0) {
+    log.warn("analysis cited segments that do not exist; removed them", {
+      meetingId,
+      removedIds: citations.removedIds,
+      droppedItems: citations.droppedItems,
+    });
+  }
+
   const counts = await persistAnalysis(prisma, {
     meetingId,
     userId,
-    analysis: llmResult.analysis,
+    analysis: citations.analysis,
     modelName: llmResult.modelName,
   });
 
