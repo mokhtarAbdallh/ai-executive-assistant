@@ -356,3 +356,17 @@ WHEN_REQUIRED`; otherwise the SDK signs a CRC32 of an empty body and S3 rejects 
   when `email_from` is set (it had no permission before), alarms for API 5xx, unhealthy API
   targets and Aurora capacity, optional monthly AWS budget. Backups were already 14 days with
   deletion protection in prod. Go-live steps are in RUNBOOK §8.
+
+## ADR-028: API and worker images must start, not just build
+
+(ADR-026/027 are Lab-only notes on branch `test/learner-lab`.)
+
+- **Bug:** the first real deployment (Learner Lab) showed both Node images crash on start with
+  `Dynamic require of "stream"/"fs" is not supported`. tsup only treats the app's own
+  `package.json` deps as external, so the deps of `@dawwen/*` (AWS SDK, Prisma) were bundled
+  CommonJS-into-ESM. CI only built the images, never ran them, so it stayed green.
+- **Fix:** `external: [/^(?![./]|@dawwen\/)/]` in both tsup configs (only workspace source is
+  bundled), and the runner installs prod deps with `--shamefully-hoist` so `apps/*/dist` resolves
+  them from `/app/node_modules`. Verified on ECS: api `/api/health` 200, worker consuming SQS.
+- **Guard:** the "Docker Builds" CI job now runs each image with no env and requires it to reach
+  `Invalid configuration` (modules loaded) instead of a module-loading error.
