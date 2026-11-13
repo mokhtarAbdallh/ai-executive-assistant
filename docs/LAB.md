@@ -183,8 +183,8 @@ dc exec -T postgres pg_dump -U dawwen dawwen | gzip | aws s3 cp - "s3://$BUCKET/
 
 1. الفرع ده فيه workflow اسمه **Lab images** بيبني 3 صور ويرفعهم على GitHub Container Registry
    مع كل push. اتأكد إنه خلص أخضر من تبويب **Actions** في الـ repo.
-2. خلّي الصور **Public** (مرة واحدة بس): GitHub ← صفحتك ← **Packages** ← `dawwen-api`
-   ← **Package settings** ← **Change visibility** ← **Public**. وكرّرها لـ `dawwen-worker` و `dawwen-web`.
+2. الصور طلعت **Public** لوحدها (واخدة الإعداد من الريبو). لو ECS اشتكى إنه مش قادر يسحبها: GitHub ← صفحتك ← **Packages** ← `dawwen-api`
+   ← **Package settings** ← **Change visibility** ← **Public**، وكرّرها لـ `dawwen-worker` و `dawwen-web`.
    (من غير كده ECS مش هيعرف يسحب الصور.)
 
 ### كل يوم: تشغيل

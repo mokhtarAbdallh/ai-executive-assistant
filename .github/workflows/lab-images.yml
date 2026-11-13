@@ -1,6 +1,6 @@
 # Builds the Learner Lab images (ADR-027) and pushes them to GitHub Container Registry.
-# After the first run, make each package public once (GitHub → Packages → dawwen-api/worker/web
-# → Package settings → Change visibility → Public) so ECS can pull without credentials.
+# The packages inherit the public repo's visibility, so ECS pulls without credentials. If one is
+# private: GitHub → Packages → dawwen-* → Package settings → Change visibility → Public.
 name: Lab images
 
 on:
