@@ -55,7 +55,9 @@ describe("loadApiConfig", () => {
   });
 
   it("requires Bedrock model ids when LLM_PROVIDER=bedrock (no hardcoded models)", () => {
-    expect(() => loadApiConfig({ ...baseEnv, LLM_PROVIDER: "bedrock" })).toThrow(/BEDROCK_MODEL_ID/);
+    expect(() => loadApiConfig({ ...baseEnv, LLM_PROVIDER: "bedrock" })).toThrow(
+      /BEDROCK_MODEL_ID/,
+    );
   });
 
   it("rejects a short APP_SECRET without echoing its value", () => {
@@ -105,5 +107,40 @@ describe("loadWorkerConfig", () => {
     expect(() => loadApiConfig({ ...baseEnv, AUTH_PROVIDER: "cognito" })).toThrow(
       /COGNITO_USER_POOL_ID/,
     );
+  });
+});
+
+describe("Learner Lab options (ADR-026)", () => {
+  it("requires base URL, key and model for the openai-compatible LLM", () => {
+    expect(() => loadApiConfig({ ...baseEnv, LLM_PROVIDER: "openai-compatible" })).toThrow(
+      /LLM_BASE_URL[\s\S]*LLM_API_KEY[\s\S]*LLM_MODEL/,
+    );
+    const config = loadWorkerConfig({
+      ...baseEnv,
+      LLM_PROVIDER: "openai-compatible",
+      LLM_BASE_URL: "https://llm.example/v1",
+      LLM_API_KEY: "k",
+      LLM_MODEL: "m",
+      ASR_PROVIDER: "openai-whisper",
+      ASR_HTTP_URL: "https://asr.example/v1",
+      ASR_MODEL: "whisper-large-v3",
+    });
+    expect(config.openaiCompatible).toMatchObject({
+      baseUrl: "https://llm.example/v1",
+      model: "m",
+    });
+    expect(config.asrModel).toBe("whisper-large-v3");
+  });
+
+  it("needs ASR_HTTP_URL for openai-whisper but no ASR_API_KEY", () => {
+    expect(() => loadWorkerConfig({ ...baseEnv, ASR_PROVIDER: "openai-whisper" })).toThrow(
+      /ASR_HTTP_URL/,
+    );
+  });
+
+  it("lets DB_SSL=false turn TLS off for a database on the same server", () => {
+    const prod = { ...baseEnv, NODE_ENV: "production" };
+    expect(loadApiConfig(prod).databaseUrl).toContain("sslmode=require");
+    expect(loadApiConfig({ ...prod, DB_SSL: "false" }).databaseUrl).not.toContain("sslmode");
   });
 });

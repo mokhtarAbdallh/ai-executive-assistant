@@ -3,4 +3,5 @@ export * from "./adapters/fake.js";
 export * from "./adapters/bedrock.js";
 export * from "./agent.js";
 export * from "./adapters/embedding.js";
+export * from "./adapters/openai-compatible.js";
 export * from "./factory.js";

@@ -22,7 +22,10 @@ async function main(): Promise<void> {
   let calendarProvider;
   if (config.googleOAuthJson) {
     try {
-      const parsed = JSON.parse(config.googleOAuthJson) as { client_id?: string; client_secret?: string };
+      const parsed = JSON.parse(config.googleOAuthJson) as {
+        client_id?: string;
+        client_secret?: string;
+      };
       if (parsed.client_id && parsed.client_secret) {
         calendarProvider = new GoogleCalendarProvider({
           clientId: parsed.client_id,
@@ -43,6 +46,17 @@ async function main(): Promise<void> {
         region: config.awsRegion,
         endpointUrl: config.awsEndpointUrl,
         modelId: config.bedrock.embeddingModelId,
+        dimensions: config.embeddingDim,
+      },
+    });
+  } else if (config.llmProvider === "openai-compatible" && config.openaiCompatible.embeddingModel) {
+    // ADR-026: free-tier embeddings (Learner Lab), same vector size as the database column.
+    embeddingClient = createEmbeddingClient({
+      provider: "openai-compatible",
+      openaiCompatible: {
+        baseUrl: config.openaiCompatible.baseUrl ?? "",
+        apiKey: config.openaiCompatible.apiKey ?? "",
+        model: config.openaiCompatible.embeddingModel,
         dimensions: config.embeddingDim,
       },
     });

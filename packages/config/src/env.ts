@@ -27,6 +27,8 @@ const baseSchema = z.object({
   DB_NAME: z.string().min(1),
   DB_USER: z.string().min(1),
   DB_PASSWORD: z.string().min(1),
+  /** ADR-026: Postgres inside the Learner Lab server has no TLS. Default: TLS in production. */
+  DB_SSL: z.enum(["true", "false"]).optional(),
 
   AUDIO_BUCKET: z.string().min(1),
   AUDIO_QUEUE_URL: z.string().url(),
@@ -41,14 +43,28 @@ const baseSchema = z.object({
   COGNITO_USER_POOL_ID: optionalString,
   COGNITO_CLIENT_ID: optionalString,
   ASR_PROVIDER: z
-    .enum(["elevenlabs", "speechmatics", "whisper-http", "qwencleo-http", "transcribe", "fake"])
+    .enum([
+      "elevenlabs",
+      "speechmatics",
+      "whisper-http",
+      "qwencleo-http",
+      "openai-whisper",
+      "transcribe",
+      "fake",
+    ])
     .default("fake"),
   /** Required when ASR_PROVIDER=qwencleo-http or whisper-http (self-hosted ASR server, ADR-018). */
   ASR_HTTP_URL: optionalString,
   /** Shared by api + worker (read only where needed). */
   DEMO_MODE: booleanString,
   PUBLIC_BASE_URL: optionalString,
-  LLM_PROVIDER: z.enum(["bedrock", "fake"]).default("fake"),
+  LLM_PROVIDER: z.enum(["bedrock", "openai-compatible", "fake"]).default("fake"),
+  /** ADR-026: any OpenAI-compatible API (e.g. Gemini free tier) when LLM_PROVIDER=openai-compatible. */
+  LLM_BASE_URL: optionalString,
+  LLM_API_KEY: optionalString,
+  LLM_MODEL: optionalString,
+  /** Embedding model on the same API; semantic search is off when unset. */
+  LLM_EMBEDDING_MODEL: optionalString,
   PRICING_CONFIG: z.string().min(2),
 });
 
@@ -64,6 +80,12 @@ export interface BaseConfig {
   audioQueueUrl: string;
   appSecret: string;
   bedrock: { modelId: string | undefined; embeddingModelId: string | undefined };
+  openaiCompatible: {
+    baseUrl: string | undefined;
+    apiKey: string | undefined;
+    model: string | undefined;
+    embeddingModel: string | undefined;
+  };
   embeddingDim: number;
   authProvider: BaseEnv["AUTH_PROVIDER"];
   asrProvider: BaseEnv["ASR_PROVIDER"];
@@ -93,8 +115,15 @@ function crossFieldChecks(e: BaseEnv): string[] {
     if (!e.BEDROCK_EMBEDDING_MODEL_ID)
       issues.push("BEDROCK_EMBEDDING_MODEL_ID: required when LLM_PROVIDER=bedrock");
   }
+  if (e.LLM_PROVIDER === "openai-compatible") {
+    for (const key of ["LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"] as const) {
+      if (!e[key]) issues.push(`${key}: required when LLM_PROVIDER=openai-compatible`);
+    }
+  }
   if (e.AUTH_PROVIDER === "cognito" && !e.COGNITO_USER_POOL_ID) {
-    issues.push("COGNITO_USER_POOL_ID: required when AUTH_PROVIDER=cognito (no mock pool fallback)");
+    issues.push(
+      "COGNITO_USER_POOL_ID: required when AUTH_PROVIDER=cognito (no mock pool fallback)",
+    );
   }
   if (isHttpAsrProvider(e.ASR_PROVIDER) && !e.ASR_HTTP_URL) {
     issues.push(`ASR_HTTP_URL: required when ASR_PROVIDER=${e.ASR_PROVIDER}`);
@@ -110,7 +139,9 @@ function crossFieldChecks(e: BaseEnv): string[] {
 
 /** Providers that talk to a self-hosted HTTP ASR server instead of a SaaS API. */
 export function isHttpAsrProvider(provider: string): boolean {
-  return provider === "qwencleo-http" || provider === "whisper-http";
+  return (
+    provider === "qwencleo-http" || provider === "whisper-http" || provider === "openai-whisper"
+  );
 }
 
 /** Providers that need a SaaS-style API key credential. */
@@ -138,12 +169,18 @@ function toBaseConfig(e: BaseEnv): BaseConfig {
       name: e.DB_NAME,
       user: e.DB_USER,
       password: e.DB_PASSWORD,
-      ssl: isProduction,
+      ssl: e.DB_SSL ? e.DB_SSL === "true" : isProduction,
     }),
     audioBucket: e.AUDIO_BUCKET,
     audioQueueUrl: e.AUDIO_QUEUE_URL,
     appSecret: e.APP_SECRET,
     bedrock: { modelId: e.BEDROCK_MODEL_ID, embeddingModelId: e.BEDROCK_EMBEDDING_MODEL_ID },
+    openaiCompatible: {
+      baseUrl: e.LLM_BASE_URL,
+      apiKey: e.LLM_API_KEY,
+      model: e.LLM_MODEL,
+      embeddingModel: e.LLM_EMBEDDING_MODEL,
+    },
     embeddingDim: e.EMBEDDING_DIM,
     authProvider: e.AUTH_PROVIDER,
     asrProvider: e.ASR_PROVIDER,
@@ -203,6 +240,8 @@ const workerSchema = baseSchema.extend({
   ASR_HTTP_API_KEY: optionalString,
   /** Free-form JSON string; parsed by the provider adapter. */
   ASR_HTTP_OPTIONS: optionalString,
+  /** Model name for ASR_PROVIDER=openai-whisper (e.g. whisper-large-v3 on Groq). */
+  ASR_MODEL: optionalString,
   /** Sweep meetings stuck in TRANSCRIBING/ANALYZING; 0 disables (ADR-019). */
   STUCK_SWEEP_SECONDS: z.coerce.number().int().nonnegative().default(300),
   /** Meetings older than this in TRANSCRIBING/ANALYZING are marked FAILED. */
@@ -217,6 +256,7 @@ export interface WorkerConfig extends BaseConfig {
   asrApiKey: string | undefined;
   asrHttpApiKey: string | undefined;
   asrHttpOptionsJson: string | undefined;
+  asrModel: string | undefined;
   stuckSweepSeconds: number;
   stuckMeetingMinutes: number;
   reminderDispatchSeconds: number;
@@ -233,6 +273,7 @@ export function loadWorkerConfig(env: Env = process.env): WorkerConfig {
     asrApiKey: e.ASR_API_KEY,
     asrHttpApiKey: e.ASR_HTTP_API_KEY,
     asrHttpOptionsJson: e.ASR_HTTP_OPTIONS,
+    asrModel: e.ASR_MODEL,
     stuckSweepSeconds: e.STUCK_SWEEP_SECONDS,
     stuckMeetingMinutes: e.STUCK_MEETING_MINUTES,
     reminderDispatchSeconds: e.REMINDER_DISPATCH_SECONDS,

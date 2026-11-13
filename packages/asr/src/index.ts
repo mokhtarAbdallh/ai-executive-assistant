@@ -5,5 +5,6 @@ export * from "./metrics.js";
 export * from "./adapters/fake.js";
 export * from "./adapters/elevenlabs.js";
 export * from "./adapters/qwencleo.js";
+export * from "./adapters/openai-whisper.js";
 export * from "./adapters/stubs.js";
 export * from "./factory.js";

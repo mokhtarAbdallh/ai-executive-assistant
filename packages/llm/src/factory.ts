@@ -5,11 +5,18 @@ import {
   FakeEmbeddingClient,
   type BedrockEmbeddingConfig,
 } from "./adapters/embedding.js";
+import {
+  OpenAiCompatibleEmbeddingClient,
+  OpenAiCompatibleLlmClient,
+  type OpenAiCompatibleConfig,
+  type OpenAiCompatibleEmbeddingConfig,
+} from "./adapters/openai-compatible.js";
 import type { LlmClient, EmbeddingClient } from "./types.js";
 
 export interface CreateLlmOptions {
   provider?: string;
   bedrock?: BedrockConfig;
+  openaiCompatible?: OpenAiCompatibleConfig;
 }
 
 export function createLlmClient(options?: CreateLlmOptions): LlmClient {
@@ -18,6 +25,9 @@ export function createLlmClient(options?: CreateLlmOptions): LlmClient {
   switch (provider) {
     case "bedrock":
       return new BedrockLlmClient(options?.bedrock);
+    case "openai-compatible":
+      if (!options?.openaiCompatible) throw new Error("openai-compatible LLM needs its config");
+      return new OpenAiCompatibleLlmClient(options.openaiCompatible);
     case "fake":
     default:
       return new FakeLlmClient();
@@ -27,6 +37,7 @@ export function createLlmClient(options?: CreateLlmOptions): LlmClient {
 export interface CreateEmbeddingOptions {
   provider?: string;
   bedrock?: BedrockEmbeddingConfig;
+  openaiCompatible?: OpenAiCompatibleEmbeddingConfig;
 }
 
 export function createEmbeddingClient(options?: CreateEmbeddingOptions): EmbeddingClient {
@@ -35,6 +46,9 @@ export function createEmbeddingClient(options?: CreateEmbeddingOptions): Embeddi
   switch (provider) {
     case "bedrock":
       return new BedrockEmbeddingClient(options?.bedrock);
+    case "openai-compatible":
+      if (!options?.openaiCompatible) throw new Error("openai-compatible embeddings need config");
+      return new OpenAiCompatibleEmbeddingClient(options.openaiCompatible);
     case "fake":
     default:
       return new FakeEmbeddingClient();

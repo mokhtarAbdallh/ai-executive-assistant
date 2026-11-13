@@ -1,6 +1,7 @@
 import { FakeSpeechToText } from "./adapters/fake.js";
 import { ElevenLabsSpeechToText, type ElevenLabsConfig } from "./adapters/elevenlabs.js";
 import { QwenCleoHttpSpeechToText, type QwenCleoHttpConfig } from "./adapters/qwencleo.js";
+import { OpenAiWhisperSpeechToText } from "./adapters/openai-whisper.js";
 import {
   SpeechmaticsSpeechToText,
   WhisperSpeechToText,
@@ -11,7 +12,7 @@ import type { SpeechToText } from "./types.js";
 export interface CreateAsrOptions {
   provider?: string;
   elevenlabs?: ElevenLabsConfig;
-  http?: QwenCleoHttpConfig;
+  http?: QwenCleoHttpConfig & { model?: string };
 }
 
 export function createSpeechToText(options?: CreateAsrOptions): SpeechToText {
@@ -28,6 +29,15 @@ export function createSpeechToText(options?: CreateAsrOptions): SpeechToText {
       return new QwenCleoHttpSpeechToText({
         baseUrl: options?.http?.baseUrl || process.env.ASR_HTTP_URL || "",
         apiKey: options?.http?.apiKey || process.env.ASR_HTTP_API_KEY,
+        timeoutMs: options?.http?.timeoutMs,
+        concurrency: options?.http?.concurrency,
+      });
+    case "openai-whisper":
+      // ADR-026: Groq / OpenAI audio API (free tier on the Learner Lab).
+      return new OpenAiWhisperSpeechToText({
+        baseUrl: options?.http?.baseUrl || process.env.ASR_HTTP_URL || "",
+        apiKey: options?.http?.apiKey || process.env.ASR_HTTP_API_KEY,
+        model: options?.http?.model || process.env.ASR_MODEL,
         timeoutMs: options?.http?.timeoutMs,
         concurrency: options?.http?.concurrency,
       });

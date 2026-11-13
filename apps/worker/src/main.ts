@@ -140,17 +140,28 @@ async function main(): Promise<void> {
       endpointUrl: config.awsEndpointUrl,
       modelId: config.bedrock.modelId,
     },
+    openaiCompatible: {
+      baseUrl: config.openaiCompatible.baseUrl ?? "",
+      apiKey: config.openaiCompatible.apiKey ?? "",
+      model: config.openaiCompatible.model ?? "",
+    },
   });
 
   // Semantic search (pgvector) — optional and only when an embedding model is configured
   // (BedrockEmbeddingClient throws on empty model id, so guard before constructing).
-  const embeddingClient = config.bedrock.embeddingModelId
+  const embeddingClient = embeddingsConfigured(config)
     ? createEmbeddingClient({
         provider: config.llmProvider,
         bedrock: {
           region: config.awsRegion,
           endpointUrl: config.awsEndpointUrl,
           modelId: config.bedrock.embeddingModelId,
+          dimensions: config.embeddingDim,
+        },
+        openaiCompatible: {
+          baseUrl: config.openaiCompatible.baseUrl ?? "",
+          apiKey: config.openaiCompatible.apiKey ?? "",
+          model: config.openaiCompatible.embeddingModel ?? "",
           dimensions: config.embeddingDim,
         },
       })
@@ -164,6 +175,7 @@ async function main(): Promise<void> {
     http: {
       baseUrl: config.asrHttpUrl || "",
       apiKey: config.asrHttpApiKey,
+      model: config.asrModel,
       timeoutMs: asrHttpOptions.timeoutMs,
       concurrency: asrHttpOptions.concurrency,
     },
@@ -252,3 +264,9 @@ async function main(): Promise<void> {
 }
 
 void main();
+
+/** Semantic search needs an embedding model for the configured LLM provider. */
+function embeddingsConfigured(config: WorkerConfig): boolean {
+  if (config.llmProvider === "openai-compatible") return !!config.openaiCompatible.embeddingModel;
+  return !!config.bedrock.embeddingModelId;
+}
