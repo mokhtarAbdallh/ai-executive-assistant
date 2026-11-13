@@ -43,7 +43,9 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     {
       cwd: root,
       env: { ...process.env, ...STACK_ENV },
-      stdio: "ignore",
+      // Worker logs are structured and never contain transcripts (Invariant 5): show them
+      // so a CI failure says why processing stalled.
+      stdio: ["ignore", "inherit", "inherit"],
       shell: process.platform === "win32",
     },
   );

@@ -30,10 +30,16 @@ services:
       - "./scripts/init-localstack.sh:/etc/localstack/init/ready.d/init-aws.sh"
       - "/var/run/docker.sock:/var/run/docker.sock"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      # Healthy only after the ready-hook created the bucket, queues and S3 notification.
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sf http://localhost:4566/_localstack/init/ready | grep -q '\"state\": \"SUCCESSFUL\"'",
+        ]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 30
+      start_period: 30s
 
 volumes:
   postgres-data:

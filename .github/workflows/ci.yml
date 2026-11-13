@@ -54,6 +54,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile || pnpm install
 
+      - name: Generate Prisma client
+        run: pnpm --filter @dawwen/db exec prisma generate
+
       - name: Lint
         run: pnpm lint
 
