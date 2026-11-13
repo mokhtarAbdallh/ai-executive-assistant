@@ -70,6 +70,17 @@ Terraform (`infra/terraform/ecs.tf` + `database.tf`) references secrets in Secre
 - `alarm_email` (Terraform variable) subscribes an email endpoint to the alarms SNS topic
   (`alarms.tf`). Leave empty to skip the subscription; alarms still exist in CloudWatch.
 
+### E. Google Calendar OAuth (ADR-023)
+
+- In Google Cloud Console → OAuth client → **Authorized redirect URIs**, add exactly
+  `${PUBLIC_BASE_URL}/api/calendar/callback` (e.g. `https://app.example.com/api/calendar/callback`).
+- `PUBLIC_BASE_URL` must be the public https origin of the web app: the callback redirects the
+  browser to `${PUBLIC_BASE_URL}/?calendar=connected|error`.
+- Without Google credentials the API uses the fake calendar, and in production approving a
+  "book meeting" proposal is refused (`calendar_not_connected`) instead of pretending it booked.
+- Email proposals are refused in production (`email_not_configured`) until the API has a real
+  email channel; reminders are sent by the worker (SES via `EMAIL_FROM`).
+
 ---
 
 ## 3. Database Migration Runbook
@@ -189,11 +200,17 @@ fields @timestamp, @message
      ```bash
      aws sqs receive-message --queue-url <DLQ_URL> --max-number-of-messages 1
      ```
-  2. Search for `failed processing meeting audio in worker` in log group `/ecs/meeting-assistant-dev/worker`.
-  3. If transient error, redrive messages back to the primary queue:
+  2. Search for `meeting processing failed` in log group `/ecs/meeting-assistant-dev/worker`
+     (the meeting row also carries a user-safe `failureReason`).
+  3. Since ADR-023 a failed run marks the meeting `FAILED`, so a plain DLQ redrive is skipped by
+     the worker (only `QUEUED` meetings are claimed). Fix the cause, then retry per meeting —
+     the user's **"حاول تاني / Try again"** button, or:
      ```bash
-     aws sqs start-message-move-task --source-arn <DLQ_ARN> --destination-arn <QUEUE_ARN>
+     curl -X POST https://yourdomain.com/api/meetings/<MEETING_ID>/retry -H "Authorization: Bearer <USER_TOKEN>"
      ```
+     Retry needs the raw audio (it is kept for failed meetings; the S3 lifecycle removes it later).
+  4. Credit holds of failed/crashed runs are released automatically (pipeline catch block or
+     the stuck-meeting sweeper); `meetings.creditHoldMicros` shows any hold still in flight.
 
 ### Scenario B: Bedrock Rate Limit / Throttling (`ThrottlingException`)
 
@@ -202,7 +219,8 @@ fields @timestamp, @message
 - **Procedure:**
   1. Check worker auto-scaling; ensure `worker_max` does not exceed your Bedrock quota.
   2. Request a quota increase in AWS Service Quotas for `Converse requests per minute`.
-  3. Exponential backoff and jitter in `@dawwen/llm` automatically retries up to 3 times before returning to SQS.
+  3. `@dawwen/llm` retries invalid output up to 3 times; tokens of failed attempts are still metered
+     (`usage_events.metadata.failed = true`). The meeting ends `FAILED` and can be retried.
 
 ### Scenario C: Credit Ledger Balance Gating (HTTP 402)
 

@@ -264,3 +264,37 @@ visual language in both themes and both languages.
 - **Tests:** real-Postgres concurrency tests (`*.db.test.ts`, gated by `TEST_DATABASE_URL`) run in
   CI against a pgvector service after `prisma migrate deploy`.
 - Cognito stays off (local JWT auth) for now; server-side refresh-token revocation is Phase 2.
+
+## ADR-023: Phase-2 pipeline reliability, honest execution, OAuth and session revocation
+
+- **Claim-once processing:** the worker claims a meeting with `QUEUED → TRANSCRIBING` (conditional
+  update). Duplicate SQS deliveries and redrives of non-queued meetings are skipped and deleted.
+- **Credit hold:** after measuring the audio (ffprobe; 1-minute estimate when unknown, raised after
+  ASR) the worker reserves `price × minutes` before paying for ASR/LLM, records it in
+  `meetings.creditHoldMicros`, and settles it against the real cost (capped, ADR-022) at the end.
+  Failures release the hold without charging; the sweeper releases holds of crashed runs.
+- **Clean retries:** a run first deletes partial results of earlier attempts (segments, embeddings,
+  analysis, tasks, decisions, pending AI proposals, …). Analysis + children + proposal +
+  `REVIEW_PENDING` are written in one transaction. Any failure → `FAILED` + user-safe reason; audio
+  is kept. `POST /api/meetings/:id/retry` re-queues a FAILED meeting (conditional FAILED → QUEUED,
+  then SQS `SendMessage`; the API role gained `sqs:SendMessage`) and the UI shows a retry button.
+- **Metering:** `LlmAnalysisFailedError` carries the tokens of failed Bedrock attempts, which are
+  written as `LLM_ANALYSIS` usage with `failed: true` (Invariant 7).
+- **Privacy/audit:** raw-audio retention defaults to 0 days (Invariant 5); deleting a meeting keeps
+  its usage events (`usage_events.meetingId` FK `ON DELETE SET NULL`).
+- **Honest execution:** proposals are validated before approval — booking needs a real date and a
+  connected calendar, email a real recipient/body, a reminder its time, a task its meeting —
+  otherwise `422 proposal_incomplete | calendar_not_connected | email_not_configured` and the
+  proposal stays pending. No default dates/recipients. Simulated channels (fake calendar, console
+  email) only when `NODE_ENV !== production` or `DEMO_MODE=true`. Approving a reminder schedules it;
+  the worker dispatcher sends it when due.
+- **Google OAuth:** `state` is HMAC-signed (key derived from `APP_SECRET`), bound to the user and
+  valid for 10 minutes; `GET /api/calendar/callback` (no Bearer) verifies it, stores the encrypted
+  tokens and redirects to `/?calendar=connected|error`. The old authenticated POST callback (which
+  accepted an arbitrary `redirectUri`) is removed.
+- **Sessions:** refresh tokens are rows in `refresh_tokens` (jti). Each refresh rotates
+  (`replacedBy`), logout revokes, and reuse of a rotated token revokes all of the user's sessions —
+  except within 30 s when two tabs refresh with the same cookie.
+- API replies serialize `BigInt` as strings (global reply serializer).
+- Deferred: transient-error auto-retry in the worker (today: user/ops retry), a real email channel
+  in the API, Cognito.
