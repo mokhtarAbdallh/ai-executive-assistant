@@ -356,3 +356,26 @@ WHEN_REQUIRED`; otherwise the SDK signs a CRC32 of an empty body and S3 rejects 
   when `email_from` is set (it had no permission before), alarms for API 5xx, unhealthy API
   targets and Aurora capacity, optional monthly AWS budget. Backups were already 14 days with
   deletion protection in prod. Go-live steps are in RUNBOOK §8.
+
+## ADR-026: Learner Lab test deployment on free providers (branch `test/learner-lab` only)
+
+- **Why:** testing on the AWS Academy Learner Lab ($50 budget, us-east-1/us-west-2, no IAM role
+  creation, no Bedrock/Transcribe/SES) with no paid AI. Production (ADR-025, Terraform) is unchanged;
+  this branch only adds options.
+- **Hosting:** one EC2 server (`deploy/lab/`): Caddy (free Let's Encrypt HTTPS on `<ip>.sslip.io`)
+  in front of web + API; worker; Postgres + pgvector in Docker (`DB_SSL=false`). Real S3 + SQS
+  created by `aws-resources.sh` with the instance's `LabRole` (no AWS keys; metadata hop limit 2 so
+  containers get the role). Raw audio expires after 7 days by lifecycle as a backstop.
+- **ASR:** `ASR_PROVIDER=openai-whisper` — any OpenAI audio API (Groq `whisper-large-v3`, free tier).
+  Uses the chunked path (120 s chunks, 2 s overlap) and Whisper's own segment timestamps, so
+  citations point at sentences; lead-in segments and `no_speech_prob > 0.6` segments are dropped.
+  No diarization (every segment is "Speaker 1"). 429/5xx are retried with Retry-After.
+- **LLM + embeddings:** `LLM_PROVIDER=openai-compatible` with `LLM_BASE_URL/LLM_API_KEY/LLM_MODEL`
+  and optional `LLM_EMBEDDING_MODEL` (Gemini `gemini-2.5-flash`, `gemini-embedding-001` at 1024
+  dims to match the pgvector column). Same prompt, schema validation, citation check and repair loop
+  as Bedrock. The assistant uses its rule-based fallback (no tool-use model on this provider).
+- **Meeting date in the prompt:** the adapter sends the meeting day (Cairo) so "Thursday" or
+  "tomorrow" resolve to real dates. Found in a live test: without it the model wrote 2023 dates.
+  **The Bedrock adapter on the main line has the same gap and should get the same fix.**
+- `COOKIE_SECURE=false` exists only for a plain-HTTP fallback. Provider costs are 0 in
+  `PRICING_CONFIG`; customers are still charged per minute from credit.
