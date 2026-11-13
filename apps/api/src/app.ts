@@ -38,7 +38,8 @@ import { CognitoAuthProvider } from "./auth/cognito.provider.js";
 import { createAuthMiddleware } from "./auth/middleware.js";
 import type { IAuthProvider } from "./auth/types.js";
 import { HkdfKeyProvider, TokenEncryptor } from "@dawwen/shared";
-import type { EmbeddingClient } from "@dawwen/llm";
+import type { AgentChatModel, EmbeddingClient } from "@dawwen/llm";
+import type { PricingConfig } from "@dawwen/config";
 import { type CalendarProvider, FakeCalendarProvider } from "./services/calendar.js";
 import { ProposalExecutor } from "./services/proposal-executor.js";
 import { SearchService } from "./services/search.js";
@@ -60,6 +61,10 @@ export interface AppOptions {
   embeddingClient?: EmbeddingClient;
   /** Queue used to re-process failed meetings; defaults to SQS from AUDIO_QUEUE_URL. */
   audioQueue?: AudioQueue;
+  /** Tool-using model for the Ask assistant (ADR-024); rule-based fallback when absent. */
+  agentChatModel?: AgentChatModel;
+  /** Provider prices for metering assistant tokens (Invariant 7). */
+  pricing?: PricingConfig;
 }
 
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
@@ -69,10 +74,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     bodyLimit: 1024 * 1024, // audio never goes through the API (direct S3 upload)
   });
 
-  // Money/credit columns are BigInt; JSON has no BigInt, so send them as strings
-  // instead of crashing the response (e.g. meetings.creditHoldMicros).
   // Before any route plugin is registered, so every route inherits it (ADR-024).
   registerErrorHandler(app);
+
+  // Money/credit columns are BigInt; JSON has no BigInt, so send them as strings
+  // instead of crashing the response (e.g. meetings.creditHoldMicros).
   app.setReplySerializer((payload) =>
     JSON.stringify(payload, (_key, value: unknown) =>
       typeof value === "bigint" ? value.toString() : value,
@@ -157,6 +163,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     draftRepository,
     reminderRepository,
     meetingRepository,
+    { chatModel: opts.agentChatModel, prisma, pricing: opts.pricing },
   );
 
   // One shared S3 client so uploads, deletion and audio cleanup target the same bucket (ADR-017).

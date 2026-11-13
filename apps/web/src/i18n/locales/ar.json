@@ -436,6 +436,8 @@
     "operation": {
       "AUDIO_TRANSCRIPTION": "تفريغ صوتي",
       "LLM_ANALYSIS": "تحليل بالذكاء الاصطناعي",
+      "LLM_CHAT": "أسئلة المساعد",
+      "EMBEDDING_GENERATION": "توليد embeddings",
       "EMBEDDINGS": "توليد embeddings",
       "EMBEDDING": "توليد embeddings"
     },

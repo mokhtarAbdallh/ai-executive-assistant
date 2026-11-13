@@ -1,5 +1,5 @@
 import { ConfigError, loadApiConfig, loadDotEnvForDev, type ApiConfig } from "@dawwen/config";
-import { createEmbeddingClient } from "@dawwen/llm";
+import { BedrockAgentChatModel, createEmbeddingClient } from "@dawwen/llm";
 import { buildApp } from "./app.js";
 import { GoogleCalendarProvider } from "./services/calendar.js";
 
@@ -47,12 +47,24 @@ async function main(): Promise<void> {
     });
   }
 
+  // Ask assistant: Bedrock tool use when an LLM is configured (ADR-024).
+  const agentChatModel =
+    config.llmProvider === "bedrock"
+      ? new BedrockAgentChatModel({
+          region: config.awsRegion,
+          endpointUrl: config.awsEndpointUrl,
+          modelId: config.bedrock.modelId,
+        })
+      : undefined;
+
   const app = await buildApp({
     corsOrigins: config.corsOrigins,
     logLevel: config.isProduction ? "info" : "debug",
     appSecret: config.appSecret,
     calendarProvider,
     embeddingClient,
+    agentChatModel,
+    pricing: config.pricing,
   });
 
   const shutdown = async (signal: string) => {

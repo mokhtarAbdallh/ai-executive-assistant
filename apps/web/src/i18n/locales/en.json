@@ -436,6 +436,8 @@
     "operation": {
       "AUDIO_TRANSCRIPTION": "Audio transcription",
       "LLM_ANALYSIS": "AI analysis",
+      "LLM_CHAT": "Assistant questions",
+      "EMBEDDING_GENERATION": "Embedding generation",
       "EMBEDDINGS": "Embeddings",
       "EMBEDDING": "Embeddings"
     },

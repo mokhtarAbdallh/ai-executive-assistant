@@ -1,18 +1,26 @@
 import type {
-  TenantContext,
-  Proposal,
   FollowUpDraft,
-  Task,
-} from "@dawwen/db";
-import { ProposalActionType } from "@dawwen/db";
-import type {
-  ProposalRepository,
-  TaskRepository,
   FollowUpDraftRepository,
-  ReminderRepository,
   MeetingRepository,
+  PrismaClient,
+  Proposal,
+  ProposalRepository,
+  ReminderRepository,
+  TaskRepository,
+  TenantContext,
 } from "@dawwen/db";
-import type { SearchService, SearchCitation } from "./search.js";
+import type { PricingConfig } from "@dawwen/config";
+import type { AgentChatModel, AgentMessage, AgentUserBlock } from "@dawwen/llm";
+import type { SearchCitation, SearchService } from "./search.js";
+import {
+  AGENT_TOOLS,
+  ToolInputError,
+  runAgentTool,
+  type AgentToolDeps,
+  type ToolContext,
+  type ToolRunState,
+} from "./agent-tools.js";
+import { DEFAULT_TIMEZONE, formatInZone, isValidTimeZone, localDateTime } from "./timezone.js";
 
 export interface AgentQueryInput {
   query: string;
@@ -29,303 +37,336 @@ export interface AgentResponse {
   honestUnknown: boolean;
 }
 
+export interface AgentServiceOptions {
+  /** Tool-using model (Bedrock). Without it a rule-based fallback answers (dev/demo). */
+  chatModel?: AgentChatModel;
+  /** For the user's time zone and for usage metering (Invariant 7). */
+  prisma?: PrismaClient;
+  pricing?: PricingConfig;
+  now?: () => Date;
+}
+
+/** Tool round trips per question; enough for search → tasks → action. */
+const MAX_MODEL_TURNS = 6;
+const MAX_HISTORY_MESSAGES = 10;
+
+function detectLanguage(text: string): "ar" | "en" {
+  return /[؀-ۿ]/.test(text) || !/[a-zA-Z]/.test(text) ? "ar" : "en";
+}
+
+function systemPrompt(ctx: ToolContext): string {
+  const { date, time } = localDateTime(ctx.now, ctx.timeZone);
+  const today = formatInZone(ctx.now, ctx.timeZone, ctx.language);
+  return `You are Dawwen's meeting assistant. Users hold meetings in Egyptian Arabic mixed with English.
+
+Now: ${today} (${date} ${time}, time zone ${ctx.timeZone}). Resolve relative dates ("بكرة", "next Tuesday") from this date. All dates you show or pass to tools are in ${ctx.timeZone}.
+${ctx.currentMeetingId ? `The user is looking at meeting ${ctx.currentMeetingId}; tools default to it.` : ""}
+
+Rules:
+- Facts about meetings come ONLY from tool results. Search before answering any question about what was said, decided or assigned.
+- Cite every fact with its meeting title and [MM:SS] timestamp exactly as the tool returned it.
+- If the tools return nothing relevant, say clearly that it was not mentioned in the recorded meetings. Never guess.
+- Actions (draft_message, create_reminder, propose_event) only create proposals. Say that the proposal waits for the user's approval in the Proposals inbox; never claim something was sent, booked or scheduled.
+- Never invent a date, time or email address. If the user did not give one, leave it out and tell them what to add before approving.
+- Answer in ${ctx.language === "ar" ? "natural Egyptian Arabic (keep English technical terms as spoken)" : "English"}, short and readable: plain sentences or a short list, no JSON, no tool names.`;
+}
+
 export class AgentService {
+  private readonly deps: AgentToolDeps;
+
   constructor(
-    private readonly searchService: SearchService,
-    private readonly taskRepository: TaskRepository,
-    private readonly proposalRepository: ProposalRepository,
-    private readonly draftRepository: FollowUpDraftRepository,
+    searchService: SearchService,
+    taskRepository: TaskRepository,
+    proposalRepository: ProposalRepository,
+    draftRepository: FollowUpDraftRepository,
     private readonly reminderRepository: ReminderRepository,
-    private readonly meetingRepository: MeetingRepository,
+    meetingRepository: MeetingRepository,
+    private readonly options: AgentServiceOptions = {},
   ) {
     void this.reminderRepository;
+    this.deps = {
+      searchService,
+      taskRepository,
+      proposalRepository,
+      draftRepository,
+      meetingRepository,
+    };
   }
 
   /**
-   * Main entry point for the Ask Chat agent.
-   * Dispatches queries to tools, enforces citation requirements,
-   * ensures action tools ONLY create proposals (Hard Invariant 1),
-   * and guarantees honest answers on unknown questions (Hard Invariant 3).
+   * Ask-chat entry point. Action tools ONLY create proposals (Invariant 1),
+   * every answer is grounded in tool results with citations (Invariant 2) and
+   * unknowns are said plainly (Invariant 3).
    */
-  async processQuery(
-    context: TenantContext,
+  async processQuery(context: TenantContext, input: AgentQueryInput): Promise<AgentResponse> {
+    const ctx: ToolContext = {
+      tenant: context,
+      timeZone: await this.userTimeZone(context.userId),
+      language: detectLanguage(input.query),
+      currentMeetingId: input.meetingId,
+      now: this.options.now?.() ?? new Date(),
+    };
+    if (input.meetingId) {
+      // 404 for another user's meeting (CrossTenantAccessViolationError → error handler).
+      await this.deps.meetingRepository.findById(context, input.meetingId);
+    }
+    return this.options.chatModel
+      ? this.runWithModel(this.options.chatModel, ctx, input)
+      : this.runRuleBased(ctx, input.query.trim());
+  }
+
+  private async userTimeZone(userId: string): Promise<string> {
+    let tz: string | undefined;
+    try {
+      const settings = await this.options.prisma?.userSettings.findUnique({
+        where: { userId },
+        select: { timezone: true },
+      });
+      tz = settings?.timezone;
+    } catch {
+      // Settings are a preference: fall back to the default zone.
+    }
+    return tz && isValidTimeZone(tz) ? tz : DEFAULT_TIMEZONE;
+  }
+
+  /* ---------------- Bedrock tool loop ---------------- */
+
+  private async runWithModel(
+    model: AgentChatModel,
+    ctx: ToolContext,
     input: AgentQueryInput,
   ): Promise<AgentResponse> {
-    const rawQuery = input.query.trim();
-    const lowerQuery = rawQuery.toLowerCase();
-    const meetingId = input.meetingId;
-
+    const state: ToolRunState = {
+      citations: [],
+      proposals: [],
+      drafts: [],
+      searchedWithoutEvidence: false,
+    };
     const toolsUsed: string[] = [];
-    const proposalsCreated: Proposal[] = [];
-    const draftsCreated: FollowUpDraft[] = [];
 
-    // 1. Tool Intent: propose_event (Propose booking next meeting)
-    if (
-      lowerQuery.includes("احجز") ||
-      lowerQuery.includes("اقترح اجتماع") ||
-      lowerQuery.includes("موعد جديد") ||
-      lowerQuery.includes("propose meeting") ||
-      lowerQuery.includes("book meeting") ||
-      lowerQuery.includes("schedule")
-    ) {
-      toolsUsed.push("propose_event");
-
-      // Extract details or use defaults
-      const tomorrow = new Date(Date.now() + 24 * 3600 * 1000);
-      tomorrow.setHours(11, 0, 0, 0);
-
-      const title = rawQuery.replace(/.*(احجز|اقترح|schedule|book)\s+/i, "").trim() || "اجتماع متابعة جديد";
-
-      // HARD INVARIANT 1: Tool creates a Proposal in PENDING_APPROVAL status.
-      // It NEVER books calendar directly.
-      const proposal = await this.proposalRepository.createPending(context, {
-        meetingId,
-        actionType: ProposalActionType.SCHEDULE_MEETING,
-        payload: {
-          title,
-          proposedDatetime: tomorrow.toISOString(),
-          place: "Google Meet",
-          reason: `اقتراح من المساعد الذكي بناءً على طلب: "${rawQuery}"`,
-          durationMinutes: 45,
-        },
-        reason: `بناءً على طلب المستخدم في المحادثة: "${rawQuery}"`,
-      });
-
-      proposalsCreated.push(proposal);
-
-      const answerAr = `تم تجهيز مقترح لحجز الاجتماع بعنوان "${title}" بتاريخ ${tomorrow.toLocaleDateString("ar-EG", { weekday: "long", year: "numeric", month: "long", day: "numeric" })} الساعة 11:00 صباحاً عبر Google Meet. المقترح الآن في انتظار موافقتك الصريحة للاعتماد والحجز.`;
-      const answerEn = `A proposal has been prepared to schedule "${title}" on ${tomorrow.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })} at 11:00 AM via Google Meet. The proposal is awaiting your explicit approval.`;
-
-      const isEnglish = /[a-zA-Z]/.test(rawQuery) && !/[\u0600-\u06FF]/.test(rawQuery);
-
-      return {
-        answer: isEnglish ? answerEn : answerAr,
-        citations: [],
-        proposalsCreated,
-        draftsCreated,
-        toolsUsed,
-        honestUnknown: false,
-      };
+    const messages: AgentMessage[] = [];
+    for (const h of (input.conversationHistory ?? []).slice(-MAX_HISTORY_MESSAGES)) {
+      const text = h.content.slice(0, 4000);
+      if (!text.trim()) continue;
+      const last = messages[messages.length - 1];
+      // Converse needs alternating roles starting with "user".
+      if (!last && h.role === "assistant") continue;
+      if (last?.role === h.role) continue;
+      messages.push(
+        h.role === "user"
+          ? { role: "user", content: [{ type: "text", text }] }
+          : { role: "assistant", content: [{ type: "text", text }] },
+      );
     }
+    if (messages[messages.length - 1]?.role === "user") messages.pop();
+    messages.push({ role: "user", content: [{ type: "text", text: input.query.trim() }] });
 
-    // 2. Tool Intent: create_reminder (Set reminder for task or follow-up)
-    if (
-      lowerQuery.includes("فكرني") ||
-      lowerQuery.includes("تذكير") ||
-      lowerQuery.includes("reminder") ||
-      lowerQuery.includes("remind me")
-    ) {
-      toolsUsed.push("create_reminder");
+    const system = systemPrompt(ctx);
+    let answer = "";
+    for (let turn = 0; turn < MAX_MODEL_TURNS; turn++) {
+      const result = await model.converse({ system, messages, tools: AGENT_TOOLS });
+      await this.meter(ctx.tenant.userId, model.providerName, result);
 
-      const remindAt = new Date(Date.now() + 3 * 3600 * 1000); // 3 hours later
-      const note = rawQuery.replace(/.*(فكرني ب|تذكير ب|remind me to)\s+/i, "").trim() || "متابعة مخرجات الاجتماع";
-
-      // HARD INVARIANT 1: Action tool ONLY creates a proposal.
-      const proposal = await this.proposalRepository.createPending(context, {
-        meetingId,
-        actionType: ProposalActionType.SEND_REMINDER,
-        payload: {
-          meetingId,
-          remindAt: remindAt.toISOString(),
-          channel: "console",
-          note,
-        },
-        reason: `طلب تذكير تلقائي: "${note}"`,
-      });
-
-      proposalsCreated.push(proposal);
-
-      const isEnglish = /[a-zA-Z]/.test(rawQuery) && !/[\u0600-\u06FF]/.test(rawQuery);
-      const answerAr = `تم إنشاء مقترح تذكير جديد: "${note}". يتطلب تفعيله اعتمادك الصريح في صندوق المقترحات.`;
-      const answerEn = `A reminder proposal has been created: "${note}". It requires your explicit approval in the Proposals inbox to activate.`;
-
-      return {
-        answer: isEnglish ? answerEn : answerAr,
-        citations: [],
-        proposalsCreated,
-        draftsCreated,
-        toolsUsed,
-        honestUnknown: false,
-      };
-    }
-
-    // 3. Tool Intent: draft_message (Draft follow up email/message)
-    if (
-      lowerQuery.includes("اكتب مسودة") ||
-      lowerQuery.includes("مسودة رسالة") ||
-      lowerQuery.includes("مسودة إيميل") ||
-      lowerQuery.includes("draft email") ||
-      lowerQuery.includes("draft message")
-    ) {
-      toolsUsed.push("draft_message");
-
-      const subject = "متابعة مخرجات الاجتماع ومحضر الاتفاق";
-      const body = `عزيزي العميل،\n\nشكرًا لاجتماعكم المثمر اليوم. فيما يلي ملخص سريع لأهم النقاط المتفق عليها ومواعيد تسليم المهام القادمة.\n\nمع التحية،\nفريق العمل`;
-
-      let targetMeetingId = meetingId;
-      if (!targetMeetingId) {
-        const meetings = await this.meetingRepository.list(context, { limit: 1 });
-        targetMeetingId = meetings[0]?.id;
+      messages.push({ role: "assistant", content: result.content });
+      const toolUses = result.content.filter((b) => b.type === "tool_use");
+      if (result.stopReason !== "tool_use" || toolUses.length === 0) {
+        answer = result.content
+          .filter((b): b is { type: "text"; text: string } => b.type === "text")
+          .map((b) => b.text)
+          .join("\n")
+          .trim();
+        break;
       }
 
-      if (targetMeetingId) {
-        // Save draft in draft repository
-        const draft = await this.draftRepository.create(context, {
-          meetingId: targetMeetingId,
-          recipientName: "العميل",
-          recipientEmail: "client@example.com",
-          subject,
-          body,
-          channel: "email",
-          status: "draft",
-        });
-        draftsCreated.push(draft);
-
-        // Also create a Proposal for sending it (Hard Invariant 1: sending requires approval)
-        const proposal = await this.proposalRepository.createPending(context, {
-          meetingId: targetMeetingId,
-          actionType: ProposalActionType.DRAFT_EMAIL,
-          payload: {
-            draftId: draft.id,
-            meetingId: targetMeetingId,
-            recipientName: "العميل",
-            recipientEmail: "client@example.com",
-            subject,
-            body,
-            channel: "email",
-          },
-          reason: `اقتراح إرسال مسودة رسالة المتابعة`,
-        });
-        proposalsCreated.push(proposal);
-      }
-
-      const isEnglish = /[a-zA-Z]/.test(rawQuery) && !/[\u0600-\u06FF]/.test(rawQuery);
-      const answerAr = `تمت كتابة مسودة رسالة المتابعة بنجاح وحفظها في تبويب "المتابعة". تم أيضاً إنشاء مقترح إرسال في صندوق المقترحات بانتظار موافقتك.`;
-      const answerEn = `The follow-up message draft has been saved to the "Follow-up" tab. A send proposal has also been created in your Proposals inbox awaiting your approval.`;
-
-      return {
-        answer: isEnglish ? answerEn : answerAr,
-        citations: [],
-        proposalsCreated,
-        draftsCreated,
-        toolsUsed,
-        honestUnknown: false,
-      };
-    }
-
-    // 4. Tool Intent: get_tasks (Retrieve action items/tasks)
-    if (
-      lowerQuery.includes("مهام") ||
-      lowerQuery.includes("المهام") ||
-      lowerQuery.includes("tasks") ||
-      lowerQuery.includes("action items") ||
-      lowerQuery.includes("مين هيعمل") ||
-      lowerQuery.includes("who is doing")
-    ) {
-      toolsUsed.push("get_tasks");
-
-      let tasks: Task[] = [];
-      if (meetingId) {
-        tasks = await this.taskRepository.listByMeeting(context, meetingId);
-      } else {
-        const meetings = await this.meetingRepository.list(context, { limit: 5 });
-        for (const m of meetings) {
-          const mTasks = await this.taskRepository.listByMeeting(context, m.id);
-          tasks.push(...mTasks);
+      const results: AgentUserBlock[] = [];
+      for (const use of toolUses) {
+        if (!toolsUsed.includes(use.name)) toolsUsed.push(use.name);
+        try {
+          const content = await runAgentTool(use.name, use.input, this.deps, ctx, state);
+          results.push({ type: "tool_result", toolUseId: use.id, content });
+        } catch (err) {
+          if (!(err instanceof ToolInputError)) throw err;
+          results.push({
+            type: "tool_result",
+            toolUseId: use.id,
+            content: { error: err.message },
+            isError: true,
+          });
         }
       }
-
-      const isEnglish = /[a-zA-Z]/.test(rawQuery) && !/[\u0600-\u06FF]/.test(rawQuery);
-
-      if (tasks.length === 0) {
-        return {
-          answer: isEnglish
-            ? "No tasks were found for this meeting or time period."
-            : "لم يتم العثور على مهام مسجلة لهذا الاجتماع أو الفترة.",
-          citations: [],
-          proposalsCreated,
-          draftsCreated,
-          toolsUsed,
-          honestUnknown: false,
-        };
-      }
-
-      const citations: SearchCitation[] = tasks
-        .filter((t) => t.sourceTs)
-        .map((t) => ({
-          meetingId: t.meetingId,
-          meetingTitle: "الاجتماع",
-          timestamp: t.sourceTs || "[00:00]",
-          text: `المهمة: ${t.title} (المسؤول: ${t.ownerName || "غير محدد"})`,
-          score: 1.0,
-          matchType: "hybrid",
-        }));
-
-      const taskLines = tasks.map((t, idx) => {
-        const ownerStr = t.ownerName ? ` (المسؤول: ${t.ownerName})` : " (المسؤول: غير محدد)";
-        const dueStr = t.dueDate ? ` [الموعد: ${t.dueDate.toISOString().split("T")[0]}]` : "";
-        const tsStr = t.sourceTs ? ` ${t.sourceTs}` : "";
-        return `${idx + 1}. ${t.title}${ownerStr}${dueStr}${tsStr}`;
-      });
-
-      const answer = isEnglish
-        ? `Here are the tasks extracted from the meeting:\n${taskLines.join("\n")}`
-        : `إليك المهام المسجلة:\n${taskLines.join("\n")}`;
-
-      return {
-        answer,
-        citations,
-        proposalsCreated,
-        draftsCreated,
-        toolsUsed,
-        honestUnknown: false,
-      };
+      messages.push({ role: "user", content: results });
     }
 
-    // 5. Default & General Query Tool: search_meetings (Hybrid Search with Citations)
-    toolsUsed.push("search_meetings");
-
-    const searchResults = await this.searchService.search(context, {
-      query: rawQuery,
-      meetingId,
-      limit: 5,
-    });
-
-    const isEnglish = /[a-zA-Z]/.test(rawQuery) && !/[\u0600-\u06FF]/.test(rawQuery);
-
-    // HARD INVARIANT 3: Honesty on Unknown Answers (No fabrication)
-    const topScore = searchResults[0]?.score ?? 0;
-    if (searchResults.length === 0 || topScore < 0.45) {
-      return {
-        answer: isEnglish
-          ? "This topic was not mentioned in the recorded meetings. I could not find relevant transcript segments or decisions regarding this question."
-          : "لم يُذكر هذا الموضوع في الاجتماعات المتوفرة. لم أجد في التفريغ الصوتي أو القرارات أي إشارة متعلقة بهذا السؤال.",
-        citations: [],
-        proposalsCreated,
-        draftsCreated,
-        toolsUsed,
-        honestUnknown: true,
-      };
+    const nothingDone = state.proposals.length === 0 && state.drafts.length === 0;
+    const honestUnknown =
+      nothingDone && state.citations.length === 0 && state.searchedWithoutEvidence;
+    if (!answer) {
+      answer =
+        ctx.language === "ar"
+          ? "معرفتش أوصل لإجابة كاملة. جرّب تسأل بشكل أبسط أو حدد الاجتماع."
+          : "I could not finish that answer. Try a simpler question or pick a meeting.";
     }
-
-    // Construct grounded answer with exact citations
-    const citations: SearchCitation[] = searchResults.slice(0, 3);
-
-    const snippetLines = citations.map(
-      (c) => `• ${c.timestamp} في "${c.meetingTitle}": ${c.text}`,
-    );
-
-    const answer = isEnglish
-      ? `Based on past meetings, here is what was discussed regarding "${rawQuery}":\n\n${snippetLines.join("\n\n")}\n\nAll details are verified from meeting transcripts and decisions.`
-      : `بناءً على ما ورد في الاجتماعات المسجلة حول "${rawQuery}":\n\n${snippetLines.join("\n\n")}\n\nتم توثيق كل نقطة أعلاه مع التوقيت المباشر والاجتماع المصدر.`;
 
     return {
       answer,
-      citations,
-      proposalsCreated,
-      draftsCreated,
+      citations: state.citations.slice(0, 10),
+      proposalsCreated: state.proposals,
+      draftsCreated: state.drafts,
       toolsUsed,
-      honestUnknown: false,
+      honestUnknown,
     };
+  }
+
+  /** Invariant 7: every model call is a usage event with its real cost. */
+  private async meter(
+    userId: string,
+    provider: string,
+    turn: { inputTokens: number; outputTokens: number; modelName: string },
+  ): Promise<void> {
+    const prisma = this.options.prisma;
+    if (!prisma) return;
+    const costs = this.options.pricing?.providerCosts;
+    const inPerM = costs?.llmPerMillionInputTokensMicros[provider] ?? 0;
+    const outPerM = costs?.llmPerMillionOutputTokensMicros[provider] ?? 0;
+    const cost = Math.round((turn.inputTokens * inPerM + turn.outputTokens * outPerM) / 1_000_000);
+    await prisma.usageEvent.create({
+      data: {
+        userId,
+        operationType: "LLM_CHAT",
+        quantity: turn.inputTokens + turn.outputTokens,
+        unit: "tokens",
+        costMicros: BigInt(cost),
+        metadata: {
+          provider,
+          model: turn.modelName,
+          inputTokens: turn.inputTokens,
+          outputTokens: turn.outputTokens,
+        },
+      },
+    });
+  }
+
+  /* ---------------- Rule-based fallback (no model configured) ---------------- */
+
+  private async runRuleBased(ctx: ToolContext, query: string): Promise<AgentResponse> {
+    const lower = query.toLowerCase();
+    const isAr = ctx.language === "ar";
+    const state: ToolRunState = {
+      citations: [],
+      proposals: [],
+      drafts: [],
+      searchedWithoutEvidence: false,
+    };
+    const respond = (tool: string, answer: string, honestUnknown = false): AgentResponse => ({
+      answer,
+      citations: state.citations,
+      proposalsCreated: state.proposals,
+      draftsCreated: state.drafts,
+      toolsUsed: [tool],
+      honestUnknown,
+    });
+    const has = (...words: string[]) => words.some((w) => lower.includes(w));
+
+    // Without a model nothing can read a date out of free text, so action
+    // proposals are created WITHOUT one and the user adds it before approving.
+    if (has("احجز", "اقترح اجتماع", "موعد جديد", "propose meeting", "book meeting", "schedule")) {
+      const title =
+        query.replace(/.*?(احجز|اقترح|schedule|book)\s+/i, "").trim() ||
+        (isAr ? "اجتماع متابعة" : "Follow-up meeting");
+      await runAgentTool("propose_event", { title }, this.deps, ctx, state);
+      return respond(
+        "propose_event",
+        isAr
+          ? `جهزت مقترح اجتماع "${title}". حدد اليوم والساعة في صندوق المقترحات وبعدها وافق عليه عشان يتحجز.`
+          : `I prepared a proposal for "${title}". Add the day and time in the Proposals inbox, then approve it to book.`,
+      );
+    }
+
+    if (has("فكرني", "تذكير", "reminder", "remind me")) {
+      const note =
+        query.replace(/.*?(فكرني ب|فكرني|تذكير ب|remind me to)\s*/i, "").trim() ||
+        (isAr ? "متابعة مخرجات الاجتماع" : "Follow up on the meeting");
+      await runAgentTool("create_reminder", { note }, this.deps, ctx, state);
+      return respond(
+        "create_reminder",
+        isAr
+          ? `جهزت مقترح تذكير: "${note}". حدد وقته في صندوق المقترحات ووافق عليه عشان يتفعّل.`
+          : `I prepared a reminder proposal: "${note}". Set its time in the Proposals inbox and approve it.`,
+      );
+    }
+
+    if (has("اكتب مسودة", "مسودة رسالة", "مسودة إيميل", "draft email", "draft message")) {
+      if (!ctx.currentMeetingId) {
+        return respond(
+          "draft_message",
+          isAr ? "افتح الاجتماع اللي عاوز تكتب عنه المتابعة الأول." : "Open the meeting first.",
+        );
+      }
+      await runAgentTool(
+        "draft_message",
+        {
+          subject: isAr ? "متابعة مخرجات الاجتماع" : "Meeting follow-up",
+          body: isAr
+            ? "أهلاً،\n\nشكراً على الاجتماع. دي أهم النقاط اللي اتفقنا عليها والمهام الجاية.\n\nتحياتي"
+            : "Hi,\n\nThanks for the meeting. Here are the key points we agreed on and the next steps.\n\nBest regards",
+        },
+        this.deps,
+        ctx,
+        state,
+      );
+      return respond(
+        "draft_message",
+        isAr
+          ? 'المسودة اتحفظت في تبويب "المتابعة"، ومعاها مقترح إرسال. ضيف إيميل المستلم قبل ما توافق.'
+          : 'The draft is saved in the "Follow-up" tab with a send proposal. Add the recipient email before approving.',
+      );
+    }
+
+    if (has("مهام", "المهام", "tasks", "action items", "مين هيعمل", "who is doing")) {
+      const result = (await runAgentTool("get_tasks", {}, this.deps, ctx, state)) as {
+        tasks: Array<{
+          title: string;
+          owner: string | null;
+          due: string | null;
+          sourceTimestamp: string | null;
+        }>;
+      };
+      if (result.tasks.length === 0) {
+        return respond(
+          "get_tasks",
+          isAr ? "مفيش مهام متسجلة للاجتماع ده." : "No tasks were found for this meeting.",
+        );
+      }
+      const unknown = isAr ? "غير محدد" : "unassigned";
+      const lines = result.tasks.map((t, i) => {
+        const owner = `${isAr ? "المسؤول" : "owner"}: ${t.owner ?? unknown}`;
+        const due = t.due ? ` · ${isAr ? "الموعد" : "due"}: ${t.due}` : "";
+        const ts = t.sourceTimestamp ? ` ${t.sourceTimestamp}` : "";
+        return `${i + 1}. ${t.title} (${owner}${due})${ts}`;
+      });
+      return respond(
+        "get_tasks",
+        `${isAr ? "دي المهام المسجلة:" : "Here are the tasks:"}\n${lines.join("\n")}`,
+      );
+    }
+
+    await runAgentTool("search_meetings", { query }, this.deps, ctx, state);
+    if (state.citations.length === 0) {
+      return respond(
+        "search_meetings",
+        isAr
+          ? "لم يُذكر هذا الموضوع في الاجتماعات المتوفرة. ملقتش أي جزء في التفريغ أو القرارات له علاقة بالسؤال ده."
+          : "This topic was not mentioned in the recorded meetings. I found no transcript passage or decision about it.",
+        true,
+      );
+    }
+    state.citations = state.citations.slice(0, 3);
+    const snippets = state.citations.map((c) => `• ${c.timestamp} "${c.meetingTitle}": ${c.text}`);
+    return respond(
+      "search_meetings",
+      isAr
+        ? `ده اللي اتقال في الاجتماعات عن الموضوع:\n\n${snippets.join("\n\n")}`
+        : `Here is what the meetings say about it:\n\n${snippets.join("\n\n")}`,
+    );
   }
 }
