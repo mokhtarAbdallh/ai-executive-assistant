@@ -379,3 +379,21 @@ WHEN_REQUIRED`; otherwise the SDK signs a CRC32 of an empty body and S3 rejects 
   **The Bedrock adapter on the main line has the same gap and should get the same fix.**
 - `COOKIE_SECURE=false` exists only for a plain-HTTP fallback. Provider costs are 0 in
   `PRICING_CONFIG`; customers are still charged per minute from credit.
+
+## ADR-027: Learner Lab via Terraform (branch `test/learner-lab` only)
+
+- **Why:** the user wants the Lab stack managed with Terraform like production. `infra/terraform/`
+  can't run in the Lab (it creates IAM roles, uses Aurora Serverless, NAT, WAF, ACM), so a separate
+  small root module lives in `infra/terraform-lab/`; production Terraform is untouched.
+- **Shape:** default VPC (public subnets, no NAT; tasks get public IPs, only the ALB SG may connect),
+  HTTP ALB (`/api/*` → api, rest → web), ECS Fargate api/worker/web with the pre-created `LabRole`
+  as task + execution role, RDS PostgreSQL 16 `db.t4g.micro` gp2 (TLS, pgvector from migration),
+  S3 + SQS + DLQ, one Secrets Manager JSON secret (DB password, app secret, Groq + Gemini keys).
+- **Migrations** run as a non-essential `migrate` container in the api task (api waits for SUCCESS),
+  so there is no separate step. Admin promotion is a one-off Fargate task (`admin_command` output).
+- **Images:** `.github/workflows/lab-images.yml` builds to GHCR (`ghcr.io/<owner>/dawwen-*:lab`);
+  packages must be made public once. Keys are passed as `TF_VAR_*` in CloudShell, never in files;
+  the local state holds them, so it stays in CloudShell.
+- **Cost:** ~$0.12/h and the Lab does not stop ECS/RDS/ALB at session end, so the guide says to
+  `terraform destroy` daily (`running=false` keeps data but still costs). The EC2 path (ADR-026)
+  stays the cheaper option.

@@ -2,6 +2,9 @@
 
 > الفرع ده (`test/learner-lab`) للتجربة بس. الكود الأصلي على `main` / `fix/phase-4-operations`
 > ما اتغيّرش. القرار والتفاصيل التقنية في ADR-026 جوه `docs/DECISIONS.md`.
+>
+> فيه طريقتين: **سيرفر EC2 واحد** (تحت، الأرخص) أو **Terraform** (شبه الإنتاج: ECS + RDS + ALB)
+> في آخر الملف تحت [الطريقة التانية: Terraform](#الطريقة-التانية-terraform).
 
 ## الشكل
 
@@ -151,3 +154,88 @@ dc exec -T postgres pg_dump -U dawwen dawwen | gzip | aws s3 cp - "s3://$BUCKET/
 
 - المفاتيح في `deploy/lab/.env.lab` على السيرفر بس (صلاحيات 600). الريبو **Public**: ماتحطش أي مفتاح في الكود.
 - بعد ما تخلص التجربة، اعمل مفاتيح جديدة من Groq و Google AI Studio وامسح القديمة.
+
+## الطريقة التانية: Terraform
+
+نفس الموقع بس بشكل قريب من الإنتاج، كله بملفات Terraform في `infra/terraform-lab/`
+(الـ Terraform الأصلي في `infra/terraform/` ما اتلمسش). التفاصيل في ADR-027.
+
+```
+المتصفح ─► http://<اسم الـ ALB>.us-east-1.elb.amazonaws.com
+              │ Load Balancer
+   ┌──────────┴───────────┐
+   /api ─► ECS api        /* ─► ECS web       ECS worker ◄─ SQS ◄─ S3 (الصوت)
+              └───────────── RDS PostgreSQL (db.t4g.micro) ──────┘
+```
+
+### الفرق عن طريقة الـ EC2
+
+|                  | EC2 واحد           | Terraform                                   |
+| ---------------- | ------------------ | ------------------------------------------- |
+| التكلفة          | ~0.05$ / ساعة      | **~0.12$ / ساعة** (~1$ في اليوم لو 8 ساعات) |
+| HTTPS            | أيوه (sslip.io)    | لأ، HTTP بس (مفيش دومين للشهادة)            |
+| لما الـ Lab يقفل | السيرفر بيقف لوحده | **ECS و RDS و ALB بيفضلوا شغالين ويصرفوا**  |
+| الداتا           | على هارد السيرفر   | RDS، وبتتمسح مع `destroy`                   |
+
+**القاعدة: `terraform destroy` في آخر كل يوم.** الـ Lab بيقفل الـ EC2 بس، مش الحاجات دي.
+
+### أول مرة: الصور (images)
+
+1. الفرع ده فيه workflow اسمه **Lab images** بيبني 3 صور ويرفعهم على GitHub Container Registry
+   مع كل push. اتأكد إنه خلص أخضر من تبويب **Actions** في الـ repo.
+2. خلّي الصور **Public** (مرة واحدة بس): GitHub ← صفحتك ← **Packages** ← `dawwen-api`
+   ← **Package settings** ← **Change visibility** ← **Public**. وكرّرها لـ `dawwen-worker` و `dawwen-web`.
+   (من غير كده ECS مش هيعرف يسحب الصور.)
+
+### كل يوم: تشغيل
+
+افتح الـ Lab ← **AWS** ← أيقونة **CloudShell** فوق (اتأكد إنك في us-east-1):
+
+```bash
+# أول مرة بس: نزّل Terraform (بيفضل موجود في CloudShell)
+mkdir -p ~/bin && cd ~/bin && curl -sLo tf.zip https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip && unzip -o tf.zip && rm tf.zip
+git clone -b test/learner-lab https://github.com/mokhtarAbdallh/ai-executive-assistant.git ~/dawwen
+```
+
+```bash
+cd ~/dawwen && git pull
+cd infra/terraform-lab
+read -rs TF_VAR_groq_api_key && export TF_VAR_groq_api_key      # الصق مفتاح Groq واضغط Enter (مش هيظهر)
+read -rs TF_VAR_gemini_api_key && export TF_VAR_gemini_api_key  # الصق مفتاح Gemini
+terraform init
+terraform apply        # اكتب yes — بياخد 10–15 دقيقة (الداتابيز أبطأ حاجة)
+terraform output app_url
+```
+
+افتح الرابط بعد 3–5 دقايق (الـ api بيعمل الـ migrations الأول).
+
+### أول مرة: حساب الأدمن
+
+1. سجّل حساب جديد من الموقع بالإيميل `admin@dawwen.lab` (أو أي إيميل وغيّر `admin_email`).
+2. في CloudShell: `terraform output -raw admin_command` ← انسخ الأمر وشغّله.
+   بعد دقيقة شوف الـ log: `aws logs tail /ecs/dawwen-lab/admin --region us-east-1` لازم يكتب `UPDATE 1`.
+3. اعمل logout و login تاني.
+
+> ملحوظة: `destroy` بيمسح الداتابيز، فبكرة هتحتاج تسجّل وتعمل الخطوة دي تاني.
+> لو عاوز تحتفظ بالداتا: `terraform apply -var running=false` بيوقف الـ ECS بس
+> (بيوفّر ~0.05$/ساعة، بس RDS و ALB بيفضلوا يصرفوا ~0.07$/ساعة).
+
+### آخر اليوم
+
+```bash
+cd ~/dawwen/infra/terraform-lab
+terraform destroy      # اكتب yes — ومحتاج المفاتيح متصدّرة زي ما فوق (أو أي قيمة)
+```
+
+### مشاكل Terraform الشائعة
+
+| المشكلة                             | الحل                                                                                     |
+| ----------------------------------- | ---------------------------------------------------------------------------------------- |
+| `CannotPullContainerError` في ECS   | الصور لسه Private على GitHub أو الـ workflow ما خلصش                                     |
+| الموقع بيدّي 503                    | الـ tasks لسه بتقوم؛ شوف `aws logs tail /ecs/dawwen-lab/api --follow --region us-east-1` |
+| `AccessDenied` على `iam:CreateRole` | مش المفروض يحصل (بنستخدم LabRole)؛ اتأكد إنك على الفرع الصح                              |
+| `ExpiredToken`                      | جلسة الـ Lab خلصت: Start Lab تاني وافتح CloudShell جديد                                  |
+| no subnets / AZ                     | غيّر `availability_zones` لمناطق موجودة في الـ default VPC                               |
+
+**أمان:** ملف `terraform.tfstate` في CloudShell فيه المفاتيح وباسورد الداتابيز. ما ترفعوش
+على GitHub ولا تبعته لحد.
