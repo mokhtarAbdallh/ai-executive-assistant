@@ -44,7 +44,10 @@ or the `/api` prefix without updating Terraform and `docs/DECISIONS.md`).
 - If something is ambiguous, choose a sensible default, record it in `docs/DECISIONS.md`
   (one short entry), and continue. Ask the user only for blockers (credentials, paid services,
   product decisions that change scope).
-- Never run `terraform apply`, `terraform destroy`, or any command that mutates a real AWS
-  account. `terraform fmt` and `terraform validate` are allowed.
+- `terraform apply`, `terraform destroy` and any other command that mutates a real AWS account are
+  allowed **only after asking the user first, every time**: say what will be created/changed/
+  deleted (from `terraform plan`) and the expected cost, then wait for an explicit yes in chat.
+  One approval covers that one run only. `terraform fmt`, `validate` and `plan` need no approval.
+  Never commit, log or echo AWS credentials, SSH keys or Terraform state.
 - Never add a paid third-party service without asking.
 - Commit in small logical commits with clear messages.
