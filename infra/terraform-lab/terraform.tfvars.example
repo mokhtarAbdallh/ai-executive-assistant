@@ -1,0 +1,11 @@
+# Optional overrides. Copy to terraform.tfvars (git-ignored) only if you need to change something.
+# NEVER put the API keys here: pass them as environment variables in CloudShell:
+#   export TF_VAR_groq_api_key=...    export TF_VAR_gemini_api_key=...
+
+# aws_region         = "us-east-1"
+# availability_zones = ["us-east-1a", "us-east-1b"]
+# image_registry     = "ghcr.io/mokhtarabdallh"
+# admin_email        = "admin@dawwen.lab"
+
+# Pause the site without deleting data (services go to 0 tasks; the database keeps running):
+# running = false
