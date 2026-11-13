@@ -1,4 +1,5 @@
 import { normalizeCodeSwitchedText } from "../post-processor.js";
+import { mapWithConcurrency, removeOverlapPrefix } from "../chunking.js";
 import type {
   SpeechToText,
   TranscribeOptions,
@@ -27,6 +28,8 @@ export interface QwenCleoHttpConfig {
   apiKey?: string;
   /** Request timeout in ms (transcription of 20 s of audio usually takes <10 s). */
   timeoutMs?: number;
+  /** Chunks transcribed at the same time (ADR-024). Default 4. */
+  concurrency?: number;
 }
 
 /** Server response contract (server/app.py of the qwencleo-asr repository). */
@@ -49,6 +52,7 @@ export class QwenCleoHttpSpeechToText implements SpeechToText {
   private readonly baseUrl: string;
   private readonly apiKey: string | undefined;
   private readonly timeoutMs: number;
+  private readonly concurrency: number;
 
   constructor(config: QwenCleoHttpConfig) {
     if (!config.baseUrl || config.baseUrl.trim().length === 0) {
@@ -59,6 +63,7 @@ export class QwenCleoHttpSpeechToText implements SpeechToText {
     this.baseUrl = config.baseUrl.replace(/\/+$/, "");
     this.apiKey = config.apiKey?.trim() || undefined;
     this.timeoutMs = config.timeoutMs ?? 600_000; // 10 min: capped by chunk size
+    this.concurrency = Math.min(Math.max(Math.round(config.concurrency ?? 4), 1), 16);
   }
 
   async transcribe(
@@ -92,12 +97,20 @@ export class QwenCleoHttpSpeechToText implements SpeechToText {
     chunks: readonly TranscriptChunk[],
     options?: TranscribeOptions,
   ): Promise<TranscriptionResult> {
-    const segments: TranscriptSegmentResult[] = [];
-
-    for (const chunk of chunks) {
-      const blob = await this.toBlob(chunk.buffer);
+    // Chunks are independent requests: run a few at once (ADR-024), then merge in order.
+    const texts = await mapWithConcurrency(chunks, this.concurrency, async (chunk) => {
+      const blob = await this.toBlob(chunkAudio(chunk));
       const data = await this.request([["file", blob, "audio.wav"]], options);
-      const text = normalizeCodeSwitchedText(data.text || "");
+      return normalizeCodeSwitchedText(data.text || "");
+    });
+
+    const segments: TranscriptSegmentResult[] = [];
+    let previousText = "";
+    for (const [index, chunk] of chunks.entries()) {
+      const raw = texts[index] ?? "";
+      // The lead-in re-transcribes the end of the previous chunk: drop those words.
+      const text = chunk.leadInMs && previousText ? removeOverlapPrefix(previousText, raw) : raw;
+      previousText = raw;
       if (!text) continue; // silent chunk
       segments.push({
         id: `seg-${segments.length + 1}`,
@@ -167,6 +180,12 @@ export class QwenCleoHttpSpeechToText implements SpeechToText {
 
     return (await response.json()) as QwenCleoResponse;
   }
+}
+
+function chunkAudio(chunk: TranscriptChunk): Buffer | Uint8Array | string {
+  if (chunk.path) return chunk.path;
+  if (chunk.buffer) return chunk.buffer;
+  throw new Error("transcript chunk has neither a path nor a buffer");
 }
 
 function normalizeLanguage(language?: string): string {

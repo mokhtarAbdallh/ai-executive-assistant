@@ -9,7 +9,18 @@ import {
   ProposalStatus,
   ProposalActionType,
 } from "@dawwen/db";
-import type { SpeechToText, TranscribeOptions, TranscriptChunk } from "@dawwen/asr";
+import { createWriteStream } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline as streamPipeline } from "node:stream/promises";
+import type {
+  SpeechToText,
+  TranscribeOptions,
+  TranscriptChunk,
+  TranscriptionResult,
+} from "@dawwen/asr";
 import { standardizeArabicTerms } from "@dawwen/asr";
 import type { LlmClient, TranscriptContext, EmbeddingClient } from "@dawwen/llm";
 import { LlmAnalysisFailedError } from "@dawwen/llm";
@@ -43,14 +54,20 @@ export interface PipelineDependencies {
    * ADR-018). When it yields chunks and the ASR client supports chunked
    * transcription, per-chunk processing is used so transcript timestamps are real.
    */
-  prepareAsrAudio?: (input: Buffer) => Promise<{
-    buffer: Buffer;
-    durationSeconds?: number;
-    chunks?: readonly TranscriptChunk[];
-  }>;
+  prepareAsrAudio?: (inputPath: string) => Promise<PreparedAsrAudio>;
   /** Optional embedding generation for semantic (pgvector) search, ADR-016. */
   embeddingClient?: EmbeddingClient;
   logger?: Log;
+}
+
+/** Audio ready for ASR. Everything lives on disk (ADR-024), never whole in memory. */
+export interface PreparedAsrAudio {
+  /** File sent when the audio is not chunked. */
+  path: string;
+  durationSeconds?: number;
+  chunks?: readonly TranscriptChunk[];
+  /** Removes temporary files created by the preparation. */
+  cleanup?: () => Promise<void>;
 }
 
 export interface ProcessMeetingParams {
@@ -227,51 +244,58 @@ async function runClaimedPipeline(
   const priceForMinutes = (minutes: number): bigint =>
     BigInt(pricingConfig.customerPricePerAudioMinuteMicros) * BigInt(minutes);
 
-  // Download audio.
-  let audioBuffer: Buffer;
+  // Download audio to a temp file (streamed: a long recording never sits in memory).
+  const workDir = await mkdtemp(join(tmpdir(), "dawwen-meeting-"));
+  let prepared: PreparedAsrAudio | undefined;
+  let asrResult: TranscriptionResult;
   try {
-    const s3Response = await s3Client.send(new GetObjectCommand({ Bucket: s3Bucket, Key: s3Key }));
-    if (!s3Response.Body) throw new Error("empty object body");
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of s3Response.Body as AsyncIterable<Uint8Array | string>) {
-      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    const audioPath = join(workDir, "original");
+    try {
+      const s3Response = await s3Client.send(
+        new GetObjectCommand({ Bucket: s3Bucket, Key: s3Key }),
+      );
+      if (!s3Response.Body) throw new Error("empty object body");
+      await streamPipeline(
+        Readable.from(s3Response.Body as AsyncIterable<Uint8Array | string>),
+        createWriteStream(audioPath),
+      );
+    } catch (err) {
+      throw new PipelineFailure(`Audio download failed: ${(err as Error).message}`);
     }
-    audioBuffer = Buffer.concat(chunks);
-  } catch (err) {
-    throw new PipelineFailure(`Audio download failed: ${(err as Error).message}`);
+
+    // Prepare audio (ADR-018) and hold credit for the measured length before ASR.
+    prepared = deps.prepareAsrAudio ? await deps.prepareAsrAudio(audioPath) : { path: audioPath };
+    const measuredMinutes =
+      prepared.durationSeconds && prepared.durationSeconds > 0
+        ? Math.max(1, Math.ceil(prepared.durationSeconds / 60))
+        : 1;
+    await ensureHold(priceForMinutes(measuredMinutes));
+
+    // Clean slate: a retry must not duplicate results of an earlier partial run.
+    await clearPreviousResults(prisma, meetingId);
+
+    // Speech-to-text.
+    const transcribeOptions: TranscribeOptions = {
+      language: meetingLanguage || "ar",
+      diarize: true,
+      audioDurationSeconds: prepared.durationSeconds,
+    };
+    log.info("running speech-to-text", {
+      asrProvider: asrProviderName,
+      preparedChunks: prepared.chunks?.length ?? 0,
+    });
+    asrResult =
+      prepared.chunks && prepared.chunks.length > 1 && asrClient.transcribeChunked
+        ? await asrClient.transcribeChunked(prepared.chunks, transcribeOptions)
+        : await asrClient.transcribe(prepared.path, transcribeOptions);
+  } finally {
+    await prepared?.cleanup?.().catch(() => undefined);
+    await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
   }
-
-  // Prepare audio (ADR-018) and hold credit for the measured length before ASR.
-  const prepared = deps.prepareAsrAudio
-    ? await deps.prepareAsrAudio(audioBuffer)
-    : { buffer: audioBuffer, durationSeconds: undefined, chunks: undefined };
-  const measuredMinutes =
-    prepared.durationSeconds && prepared.durationSeconds > 0
-      ? Math.max(1, Math.ceil(prepared.durationSeconds / 60))
-      : 1;
-  await ensureHold(priceForMinutes(measuredMinutes));
-
-  // Clean slate: a retry must not duplicate results of an earlier partial run.
-  await clearPreviousResults(prisma, meetingId);
-
-  // Speech-to-text.
-  const transcribeOptions: TranscribeOptions = {
-    language: meetingLanguage || "ar",
-    diarize: true,
-    audioDurationSeconds: prepared.durationSeconds,
-  };
-  log.info("running speech-to-text", {
-    asrProvider: asrProviderName,
-    preparedChunks: prepared.chunks?.length ?? 0,
-  });
-  const asrResult =
-    prepared.chunks && prepared.chunks.length > 1 && asrClient.transcribeChunked
-      ? await asrClient.transcribeChunked(prepared.chunks, transcribeOptions)
-      : await asrClient.transcribe(prepared.buffer, transcribeOptions);
 
   // Prefer the measured duration (ffprobe) over provider-reported values.
   const durationSeconds =
-    prepared.durationSeconds && prepared.durationSeconds > 0
+    prepared?.durationSeconds && prepared.durationSeconds > 0
       ? Math.ceil(prepared.durationSeconds)
       : asrResult.durationSeconds && asrResult.durationSeconds > 0
         ? asrResult.durationSeconds

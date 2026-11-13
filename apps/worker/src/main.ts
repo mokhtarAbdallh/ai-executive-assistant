@@ -31,12 +31,22 @@ function readConfig(): WorkerConfig {
 interface AsrHttpOptions {
   chunkSeconds: number;
   timeoutMs: number;
+  /** Chunks sent to the ASR server at once (ADR-024). */
+  concurrency: number;
+  /** Seconds each chunk repeats from the previous one (ADR-024). */
+  overlapSeconds: number;
 }
 
 const DEFAULT_ASR_HTTP_OPTIONS: AsrHttpOptions = {
   chunkSeconds: 20, // matches the upstream qwencleo-asr chunked transcription
   timeoutMs: 600_000,
+  concurrency: 4,
+  overlapSeconds: 2,
 };
+
+function boundedNumber(value: unknown, min: number, max: number, fallback: number): number {
+  return typeof value === "number" && value >= min && value <= max ? value : fallback;
+}
 
 function parseAsrHttpOptions(
   raw: string | undefined,
@@ -59,7 +69,16 @@ function parseAsrHttpOptions(
       parsed.timeoutMs <= 3_600_000
         ? Math.round(parsed.timeoutMs)
         : DEFAULT_ASR_HTTP_OPTIONS.timeoutMs;
-    return { chunkSeconds, timeoutMs };
+    const concurrency = Math.round(
+      boundedNumber(parsed.concurrency, 1, 16, DEFAULT_ASR_HTTP_OPTIONS.concurrency),
+    );
+    const overlapSeconds = boundedNumber(
+      parsed.overlapSeconds,
+      0,
+      Math.min(5, chunkSeconds / 2),
+      DEFAULT_ASR_HTTP_OPTIONS.overlapSeconds,
+    );
+    return { chunkSeconds, timeoutMs, concurrency, overlapSeconds };
   } catch {
     log.warn("ASR_HTTP_OPTIONS is not valid JSON; using defaults");
     return DEFAULT_ASR_HTTP_OPTIONS;
@@ -141,6 +160,7 @@ async function main(): Promise<void> {
       baseUrl: config.asrHttpUrl || "",
       apiKey: config.asrHttpApiKey,
       timeoutMs: asrHttpOptions.timeoutMs,
+      concurrency: asrHttpOptions.concurrency,
     },
   });
 
@@ -163,6 +183,7 @@ async function main(): Promise<void> {
         ? (input) =>
             prepareAudioForAsr(input, {
               chunkSeconds: asrHttpOptions.chunkSeconds,
+              overlapSeconds: asrHttpOptions.overlapSeconds,
               log,
             })
         : undefined,

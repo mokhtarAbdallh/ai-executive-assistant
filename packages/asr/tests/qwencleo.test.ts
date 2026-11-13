@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   QwenCleoHttpSpeechToText,
   createSpeechToText,
+  mapWithConcurrency,
+  removeOverlapPrefix,
 } from "../src/index.js";
 
 /** Installs a fetch mock for successive /v1/transcribe calls. */
@@ -79,7 +84,7 @@ describe("QwenCleoHttpSpeechToText (ADR-018)", () => {
     mock.restore();
   });
 
-  it("transcribes chunks sequentially and merges them with real timestamps", async () => {
+  it("transcribes chunks and merges them with real timestamps", async () => {
     const mock = mockFetch([
       { body: { text: "افتح الملف", language: "Arabic" } },
       { body: { text: "وكدا التسليم", language: "Arabic" } },
@@ -100,6 +105,69 @@ describe("QwenCleoHttpSpeechToText (ADR-018)", () => {
     expect(result.durationSeconds).toBe(38);
 
     mock.restore();
+  });
+
+  it("transcribes several chunks at once but merges them in order (ADR-024)", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string | URL, init?: RequestInit) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      const file = (init?.body as FormData).get("file") as Blob;
+      const label = await file.text();
+      // Later chunks answer first, so ordering cannot come from completion order.
+      await new Promise((r) => setTimeout(r, 40 - Number(label.slice(1)) * 5));
+      inFlight--;
+      return { ok: true, status: 200, json: async () => ({ text: `text ${label}` }) } as Response;
+    }) as typeof fetch;
+
+    try {
+      const asr = new QwenCleoHttpSpeechToText({ baseUrl: "http://asr:8000", concurrency: 3 });
+      const chunks = Array.from({ length: 6 }, (_, i) => ({
+        buffer: Buffer.from(`c${i}`),
+        startMs: i * 20_000,
+        endMs: (i + 1) * 20_000,
+      }));
+      const result = await asr.transcribeChunked(chunks);
+
+      expect(maxInFlight).toBe(3);
+      expect(result.segments.map((s) => s.text)).toEqual([
+        "text c0",
+        "text c1",
+        "text c2",
+        "text c3",
+        "text c4",
+        "text c5",
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("reads chunks from disk and removes words repeated by the overlap", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "asr-test-"));
+    try {
+      await writeFile(join(dir, "a.wav"), "a");
+      await writeFile(join(dir, "b.wav"), "b");
+      const mock = mockFetch([
+        { body: { text: "هنسلم الـ release يوم الخميس الجاي" } },
+        { body: { text: "الخميس الجاي إن شاء الله" } },
+      ]);
+
+      const asr = new QwenCleoHttpSpeechToText({ baseUrl: "http://asr:8000", concurrency: 1 });
+      const result = await asr.transcribeChunked([
+        { path: join(dir, "a.wav"), startMs: 0, endMs: 20_000 },
+        { path: join(dir, "b.wav"), startMs: 20_000, endMs: 30_000, leadInMs: 2_000 },
+      ]);
+
+      expect(await ((mock.calls[0]!.init.body as FormData).get("file") as Blob).text()).toBe("a");
+      expect(result.segments[1]).toMatchObject({ startMs: 20_000, text: "إن شاء الله" });
+      expect(result.text).toBe("هنسلم الـ release يوم الخميس الجاي إن شاء الله");
+      mock.restore();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("throws a descriptive error for HTTP failures", async () => {
@@ -132,5 +200,32 @@ describe("createSpeechToText factory: qwencleo-http", () => {
       http: { baseUrl: "http://asr:8000" },
     });
     expect(asr.providerName).toBe("qwencleo-http");
+  });
+});
+
+describe("chunk helpers (ADR-024)", () => {
+  it("removeOverlapPrefix drops the longest repeated run, ignoring punctuation and hamza", () => {
+    expect(removeOverlapPrefix("we ship on Thursday.", "on thursday and then review")).toBe(
+      "and then review",
+    );
+    expect(removeOverlapPrefix("اتفقنا على أحمد", "احمد هيبعت التقرير")).toBe("هيبعت التقرير");
+  });
+
+  it("removeOverlapPrefix keeps the text when nothing (or only a tiny word) repeats", () => {
+    expect(removeOverlapPrefix("first part", "second part")).toBe("second part");
+    expect(removeOverlapPrefix("قال و", "و بعدين")).toBe("و بعدين");
+  });
+
+  it("mapWithConcurrency stops starting work after a failure", async () => {
+    const started: number[] = [];
+    await expect(
+      mapWithConcurrency([0, 1, 2, 3, 4], 2, async (n) => {
+        started.push(n);
+        if (n === 0) throw new Error("boom");
+        await new Promise((r) => setTimeout(r, 10));
+        return n;
+      }),
+    ).rejects.toThrow("boom");
+    expect(started).toEqual([0, 1]);
   });
 });

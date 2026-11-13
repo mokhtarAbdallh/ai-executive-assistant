@@ -49,9 +49,17 @@ export interface SpeechToText {
   ): Promise<TranscriptionResult>;
 }
 
-/** One pre-cut piece of audio with its position in the original recording. */
+/**
+ * One pre-cut piece of audio with its position in the original recording.
+ * The audio is either in memory (`buffer`) or in a file on disk (`path`, ADR-024).
+ * It covers `[startMs - leadInMs, endMs]`: the lead-in repeats the end of the
+ * previous chunk so no word is cut at the boundary; its words are removed after
+ * transcription and the segment is reported as `[startMs, endMs]`.
+ */
 export interface TranscriptChunk {
-  buffer: Buffer | Uint8Array;
+  buffer?: Buffer | Uint8Array;
+  path?: string;
   startMs: number;
   endMs: number;
+  leadInMs?: number;
 }

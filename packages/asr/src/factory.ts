@@ -28,6 +28,8 @@ export function createSpeechToText(options?: CreateAsrOptions): SpeechToText {
       return new QwenCleoHttpSpeechToText({
         baseUrl: options?.http?.baseUrl || process.env.ASR_HTTP_URL || "",
         apiKey: options?.http?.apiKey || process.env.ASR_HTTP_API_KEY,
+        timeoutMs: options?.http?.timeoutMs,
+        concurrency: options?.http?.concurrency,
       });
     case "whisper-http":
     case "whisper":
