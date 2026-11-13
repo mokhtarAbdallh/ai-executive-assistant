@@ -115,7 +115,8 @@ async function main(): Promise<void> {
     bucket: config.audioBucket,
   });
 
-  const prisma = getPrismaClient();
+  // ECS injects DB_* only; the URL is built by the config (ADR-025).
+  const prisma = getPrismaClient(config.databaseUrl);
 
   const s3Client = new S3Client({
     region: config.awsRegion,

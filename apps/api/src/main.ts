@@ -1,5 +1,6 @@
 import { ConfigError, loadApiConfig, loadDotEnvForDev, type ApiConfig } from "@dawwen/config";
 import { BedrockAgentChatModel, createEmbeddingClient } from "@dawwen/llm";
+import { getPrismaClient } from "@dawwen/db";
 import { buildApp } from "./app.js";
 import { GoogleCalendarProvider } from "./services/calendar.js";
 
@@ -61,6 +62,8 @@ async function main(): Promise<void> {
     corsOrigins: config.corsOrigins,
     logLevel: config.isProduction ? "info" : "debug",
     appSecret: config.appSecret,
+    // Prisma reads DATABASE_URL, which ECS does not set: use the URL built from DB_* (ADR-025).
+    prisma: getPrismaClient(config.databaseUrl),
     calendarProvider,
     embeddingClient,
     agentChatModel,

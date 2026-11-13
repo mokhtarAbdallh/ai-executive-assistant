@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import cookie from "@fastify/cookie";
-import { S3Client } from "@aws-sdk/client-s3";
+import { createS3Client } from "./services/s3.js";
 import { API_PREFIX } from "@dawwen/shared";
 import type { PrismaClient } from "@dawwen/db";
 import {
@@ -167,11 +167,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   );
 
   // One shared S3 client so uploads, deletion and audio cleanup target the same bucket (ADR-017).
-  const s3Client = new S3Client({
-    region: process.env.AWS_REGION || "eu-central-1",
-    endpoint: process.env.AWS_ENDPOINT_URL,
-    forcePathStyle: !!process.env.AWS_ENDPOINT_URL, // needed for LocalStack
-  });
+  const s3Client = createS3Client();
   const audioBucket = process.env.AUDIO_BUCKET;
 
   const paymentProvider = opts.paymentProvider ?? new ManualPaymentAdapter(creditRepository);

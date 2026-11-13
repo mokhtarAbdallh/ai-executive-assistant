@@ -12,6 +12,7 @@
   },
   "scripts": {
     "generate": "prisma generate",
+    "migrate:deploy": "node scripts/migrate-deploy.mjs",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "admin:grant": "node --experimental-strip-types --no-warnings scripts/grant-admin.ts"

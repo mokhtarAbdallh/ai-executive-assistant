@@ -40,6 +40,8 @@ COPY packages/config/package.json ./packages/config/package.json
 COPY packages/shared/package.json ./packages/shared/package.json
 COPY packages/db/package.json ./packages/db/package.json
 COPY packages/db/prisma ./packages/db/prisma
+# One-off migration entry point (ADR-025): run-task with this command override.
+COPY packages/db/scripts/migrate-deploy.mjs ./packages/db/scripts/migrate-deploy.mjs
 COPY packages/asr/package.json ./packages/asr/package.json
 COPY packages/llm/package.json ./packages/llm/package.json
 COPY apps/api/package.json ./apps/api/package.json

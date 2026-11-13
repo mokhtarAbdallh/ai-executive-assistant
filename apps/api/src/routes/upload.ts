@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { createS3Client } from "../services/s3.js";
 import {
   type MeetingRepository,
   type ConsentRepository,
@@ -57,11 +58,7 @@ export async function uploadRoutes(
 
   const s3Client =
     options.s3Client ||
-    new S3Client({
-      region: process.env.AWS_REGION || "eu-central-1",
-      endpoint: process.env.AWS_ENDPOINT_URL,
-      forcePathStyle: !!process.env.AWS_ENDPOINT_URL, // needed for LocalStack
-    });
+    createS3Client();
 
   fastify.post(
     "/meetings/:id/upload-url",
