@@ -280,12 +280,14 @@ aws ecs update-service --cluster meeting-assistant-dev --service meeting-assista
 Do these in order; tick each one. Nothing here is done by code alone.
 
 **Decisions**
+
 - [ ] AWS region chosen (Bedrock model available there, close to Egypt: `eu-central-1` or `me-central-1`).
 - [ ] ASR provider chosen from the bake-off (`pnpm --filter @dawwen/worker bakeoff --dir <recordings>`
       on 20–30 real Egyptian meetings with human transcripts; compare WER, names/English terms by hand, cost).
 - [ ] Payment method for credits (manual top-up codes via the admin endpoint first).
 
 **Infrastructure** (`environment = "prod"` in tfvars)
+
 - [ ] `certificate_arn` set (HTTPS only), `cors_origins` = the real web origin, `public_base_url` set.
 - [ ] `single_nat_gateway = false`, `api_desired_count >= 2` for availability.
 - [ ] `pricing_config` holds **your real provider prices** (check the ElevenLabs price per minute
@@ -297,14 +299,16 @@ Do these in order; tick each one. Nothing here is done by code alone.
 - [ ] Secrets filled in Secrets Manager (`app-secret`, ASR/Google keys) — never in tfvars or git.
 
 **Data safety**
+
 - [ ] Aurora: 14-day backups, deletion protection and final snapshot are automatic in prod —
       do one test restore of a snapshot into a new cluster before launch.
 - [ ] `audio_retention_days` agreed (privacy policy says the same number).
 
 **Release**
+
 - [ ] `terraform plan` reviewed, `apply` run by a human.
 - [ ] Images pushed, migrations run (section 3), services healthy (section 4).
 - [ ] Smoke test on prod: register → upload a short recording with consent → review → approve a
       proposal. (`pnpm test:e2e:fullstack` covers the same path locally.)
 - [ ] Cost check after the first real week: `pnpm --filter @dawwen/worker cost-report --fixed-usd
-      <AWS bill excl. Bedrock>` → set the customer price per minute with a margin you accept.
+    <AWS bill excl. Bedrock>` → set the customer price per minute with a margin you accept.

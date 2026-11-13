@@ -334,7 +334,7 @@ visual language in both themes and both languages.
   Migrations run as a one-off ECS task (`terraform output migrate_command`, script
   `packages/db/scripts/migrate-deploy.mjs`, `sslmode=require` in prod, URL never printed).
 - **Presigned uploads:** S3 clients use `requestChecksumCalculation/responseChecksumValidation =
-  WHEN_REQUIRED`; otherwise the SDK signs a CRC32 of an empty body and S3 rejects browser PUTs.
+WHEN_REQUIRED`; otherwise the SDK signs a CRC32 of an empty body and S3 rejects browser PUTs.
 - **Local stack:** compose ports are overridable (`DAWWEN_PG_PORT`, `DAWWEN_LOCALSTACK_PORT`);
   the LocalStack init script is idempotent (bucket, CORS, queue + DLQ, S3→SQS on `uploads/`).
 - **Full-stack e2e:** `pnpm test:e2e:fullstack` drives login → upload with consent → processing →
