@@ -47,7 +47,7 @@ COPY packages/llm/package.json ./packages/llm/package.json
 COPY apps/api/package.json ./apps/api/package.json
 
 # Prod-only dependencies + Prisma client generation into the workspace store.
-RUN pnpm install --prod --frozen-lockfile --ignore-scripts \
+RUN pnpm install --prod --frozen-lockfile --ignore-scripts --shamefully-hoist \
     && pnpm --filter @dawwen/db exec prisma generate
 
 COPY --from=builder /app/apps/api/dist ./apps/api/dist
